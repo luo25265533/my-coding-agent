@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -144,6 +144,12 @@ describe('.env 与优先级', () => {
 
   it('.env 不存在时不报错', () => {
     expect(loadConfig({ cwd, env: {} }).llm.provider).toBe('mock');
+  });
+
+  it('.env 路径是目录时抛 ConfigError 而非静默忽略', () => {
+    mkdirSync(path.join(cwd, '.env'));
+    expect(() => loadConfig({ cwd, env: {} })).toThrow(ConfigError);
+    expect(() => loadConfig({ cwd, env: {} })).toThrow(/Failed to read env file/);
   });
 
   it('envFilePath=null 时跳过 .env', () => {

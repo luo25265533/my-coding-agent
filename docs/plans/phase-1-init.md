@@ -1,6 +1,6 @@
 # 阶段 1 开发 Plan：项目初始化
 
-> 状态：**决策已确认（2026-11-12），待实施**
+> 状态：**已实施完成（2026-11-12）**，验收门全绿，详见第九节实施记录
 > 已定决策：方案 A 锁兼容版本 / 残留直接删除重装 / OpenAI 兼容优先 / git init + 首次提交
 > 上游文档：[docs/architecture.md](../architecture.md)
 > 目标交付：**一个能启动的 Agent 项目骨架** —— CLI 可运行、配置可加载校验、日志可落盘、lint/format/typecheck/test 四条命令全绿。
@@ -296,8 +296,63 @@ git diff          # 人工复核
 
 ## 八、交付清单（AGENTS.md 第七节）
 
-- [ ] Plan 文件（本文件）
-- [ ] 代码变更（src/ + tests/ + 配置文件）
-- [ ] 测试结果（四条命令的真实输出）
-- [ ] 风险说明（第七节 + 实施中新发现）
-- [ ] 完成情况（开发报告，含未完成项与原因）
+- [x] Plan 文件（本文件）
+- [x] 代码变更（src/ + tests/ + 配置文件，首次提交 8bec4fb）
+- [x] 测试结果（第九节，四条命令真实输出）
+- [x] 风险说明（第七节 + 第九节实施中新发现）
+- [x] 完成情况（第九节）
+
+## 九、实施记录（2026-11-12）
+
+### 9.1 验收门真实结果
+
+| 命令                                           | 退出码 | 结果                                      |
+| ---------------------------------------------- | ------ | ----------------------------------------- |
+| `pnpm typecheck`                               | 0      | 0 error                                   |
+| `pnpm lint`                                    | 0      | 0 error                                   |
+| `pnpm format:check`                            | 0      | All matched files use Prettier code style |
+| `pnpm test`                                    | 0      | **6 个文件 / 78 个用例全部通过**          |
+| `pnpm build`                                   | 0      | dist/ 产出 10 个 .js                      |
+| `node dist/cli/main.js --version`              | 0      | 输出 `0.1.0`                              |
+| `node dist/cli/main.js run "acceptance check"` | 0      | 骨架就绪，日志落盘                        |
+| `git status`                                   | —      | 工作树干净                                |
+
+覆盖率（`pnpm test:coverage`，v8）：语句 **94.93%**、分支 **91.56%**、函数 **95.45%**。
+
+手工验证的退出码：`--version`/`--help`/`run` → 0；未知命令、非法 `--log-level`、provider 非 mock 缺 key、日志目录越界 → 2。
+
+### 9.2 实施中发现并修复的两个真实缺陷
+
+**缺陷 1：multistream 静默丢弃 debug/trace 日志**
+
+`pino.multistream()` 在 stream 未显式指定 `level` 时，回落到 `DEFAULT_INFO_LEVEL`（`pino/lib/multistream.js:129`）。因此即使 logger 级别设为 `debug`，两个流仍按 info 过滤，debug/trace 全部丢失。由单测「debug 级别下 debug 落盘」捕获。修复：两个 stream 都显式传 `level: config.log.level`，并补 trace 级别用例。
+
+**缺陷 2：同步 rmSync 重试饿死异步 fd 关闭回调**
+
+sonic-boom 通过 `fs.fsync` → `fs.close` 异步回调释放文件句柄。测试清理最初用 `rmSync(..., { maxRetries })`，而 Node 的同步重试会阻塞事件循环，导致关闭回调永远得不到执行，Windows 下持续 ENOTEMPTY/EPERM。实验证据：改用异步 `setTimeout` 轮询后 54ms 即可删除。修复：测试清理改用 `node:fs/promises` 的 `rm`（异步重试会让出事件循环）。
+
+同时 `close()` 从 `fileStream.end()` 改为 `fileStream.destroy()`：`end()` 重复调用会抛 `SonicBoom destroyed`，`destroy()` 幂等；`SonicBoom` 的类型声明未暴露 `destroyed` 字段，故不做前置判断。
+
+### 9.3 相对原 Plan 的偏差
+
+| 项             | 原 Plan                  | 实际                                                         | 原因                                                                                                           |
+| -------------- | ------------------------ | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| logger 返回值  | `createLogger(): Logger` | `createLogger(): LoggerHandle`（`logger`/`logFile`/`close`） | 必须能显式释放文件句柄，否则 Windows 下测试临时目录无法清理；`logFile` 顺带省去调用方重复计算                  |
+| 新增文件       | 无                       | `src/shared/package-info.ts`                                 | `--version` 与 run banner 都需读 package.json，抽出避免重复与循环依赖                                          |
+| 新增文件       | 无                       | `tests/unit/run.test.ts`                                     | 原 cli 单测 mock 了 runCommand，集成测试在子进程跑（覆盖率不统计），导致 run.ts 覆盖率 0%；补直接调用后达 100% |
+| 新增文件       | 无                       | `.gitattributes`（`* text=auto eol=lf`）                     | git 的 autocrlf 与 prettier `endOfLine: lf` 冲突，否则 Windows 克隆后 `format:check` 必失败                    |
+| 控制台输出测试 | 放在 logger 单测         | 移到集成冒烟测试                                             | `vi.spyOn(process.stdout)` 捕获不到 pino-pretty 的输出；改用真实子进程 stdout 断言更可靠                       |
+| 用例数         | 5 个文件                 | 6 个文件 / 78 用例                                           | 上述新增                                                                                                       |
+
+### 9.4 未覆盖项（如实记录，不声称已测）
+
+- `src/index.ts` 0%：纯 re-export 桶文件，无逻辑。
+- `src/cli/main.ts:71-74`：直接执行守卫分支，只在真实进程入口触发；集成冒烟已行为验证，但覆盖率不计入子进程。
+- `src/shared/package-info.ts:19-22,26-29`：package.json 读取失败与格式非法两条错误分支未覆盖。
+- `src/config/load.ts`、`src/logger/index.ts` 各余 1 处次要分支未覆盖。
+
+### 9.5 遗留风险
+
+- **eslint 9.39.5 已被官方标记 deprecated**（安装时警告：This version is no longer supported），其传递依赖 `glob@10.5.0` 也被标记含已公开的安全漏洞。这是方案 A 为兼容 Node 20.18.1 的必然代价。升级 Node 22 后应同步升 ESLint 10 / Vitest 5 / commander 15。
+- 日志目录的越界校验目前只做 `path.relative` 前缀判断，**未做 realpath 符号链接逃逸检查**，该项属阶段 3 PathGuard 范围。
+- 阶段 1 未引入 `openai` SDK，`LLM_PROVIDER=openai-compatible` 仅通过配置校验，不会真正发起请求。

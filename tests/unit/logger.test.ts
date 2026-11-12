@@ -1,10 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig, type AppConfig } from '../../src/config/load.js';
 import { createLogger, resolveLogFilePath } from '../../src/logger/index.js';
+import { AgentError, ErrorCode, ExitCode } from '../../src/shared/errors.js';
 
 let cwd: string;
 let closers: (() => void)[] = [];
@@ -144,6 +145,28 @@ describe('文件与目录', () => {
     const { config, handle } = setup();
     expect(handle.logFile).toBe(resolveLogFilePath(config));
     expect(handle.logFile.endsWith('.jsonl')).toBe(true);
+  });
+
+  it('日志目录无法创建时抛 LogSetupFailed 并映射退出码 1', () => {
+    const blocked = path.join(cwd, 'blocked');
+    writeFileSync(blocked, 'i am a file, not a directory', 'utf8');
+    const config = loadConfig({
+      cwd,
+      env: { AGENT_LOG_DIR: 'blocked', AGENT_LOG_PRETTY: 'false' },
+      envFilePath: null,
+    });
+    expect(() => createLogger(config)).toThrow(AgentError);
+    expect(() => createLogger(config)).toThrow(/Failed to initialize logger/);
+
+    let caught: unknown;
+    try {
+      createLogger(config);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AgentError);
+    expect((caught as AgentError).code).toBe(ErrorCode.LogSetupFailed);
+    expect((caught as AgentError).exitCode).toBe(ExitCode.RuntimeError);
   });
 
   it('close 幂等且释放文件句柄，目录可被删除（Windows 回归）', async () => {

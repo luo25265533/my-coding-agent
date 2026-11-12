@@ -63,18 +63,18 @@
 
 ### 2.2 模块职责与核心契约
 
-| 模块      | 职责                                     | 关键契约                                                                            |
-| --------- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
-| agent     | 执行循环、迭代上限、中止、状态机         | `AgentLoop.run(task, opts): Promise<AgentResult>`                                   |
-| llm       | 供应商适配、流式、重试、超时、token 统计 | `LLMClient.chat(req): Promise<ChatResponse>` / `stream(req): AsyncIterable<Chunk>`  |
-| planner   | 任务拆解、重规划                         | `Planner.plan(task, ctx): Promise<Plan>`；`replan(plan, feedback)`                  |
-| tools     | 注册表、参数校验、分发、结果规范化       | `ToolRegistry.register(def)`；`dispatch(call, ctx): Promise<ToolResult>`            |
-| context   | 上下文组装、token 预算、截断/压缩        | `ContextManager.build(task, history): Promise<Prompt>`                              |
-| memory    | 会话与长期记忆持久化                     | `MemoryStore.append(entry)`；`search(query)`                                        |
-| security  | 路径沙箱、权限决策、命令风险分级         | `PathGuard.resolve(p): SafePath`；`PermissionGate.check(action): Promise<Decision>` |
-| evaluator | 跑验证命令、判定成败、给出重试建议       | `Evaluator.verify(plan, results): Promise<Verdict>`                                 |
-| config    | .env 加载 + zod 校验 + 冻结              | `loadConfig(env): Readonly<AppConfig>`                                              |
-| logger    | 分级日志、脱敏、子 logger                | `createLogger(cfg): Logger`；`logger.child({ module, runId })`                      |
+| 模块      | 职责                                     | 关键契约                                                                                                   |
+| --------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| agent     | 执行循环、迭代上限、中止、状态机         | `AgentLoop.run(task, opts): Promise<AgentResult>`                                                          |
+| llm       | 供应商适配、流式、重试、超时、token 统计 | `LLMClient.chat(req): Promise<ChatResponse>` / `stream(req): AsyncIterable<Chunk>`                         |
+| planner   | 任务拆解、重规划                         | `Planner.plan(task, ctx): Promise<Plan>`；`replan(plan, feedback)`                                         |
+| tools     | 注册表、参数校验、分发、结果规范化       | `ToolRegistry.register(def)`；`dispatch(call, ctx): Promise<ToolResult>`                                   |
+| context   | 上下文组装、token 预算、截断/压缩        | `ContextManager.build(task, history): Promise<Prompt>`                                                     |
+| memory    | 会话与长期记忆持久化                     | `MemoryStore.append(entry)`；`search(query)`                                                               |
+| security  | 路径沙箱、权限决策、命令风险分级         | `PathGuard.resolve(p): SafePath`；`PermissionGate.check(action): Promise<Decision>`                        |
+| evaluator | 跑验证命令、判定成败、给出重试建议       | `Evaluator.verify(plan, results): Promise<Verdict>`                                                        |
+| config    | .env 加载 + zod 校验 + 冻结              | `loadConfig(env): Readonly<AppConfig>`                                                                     |
+| logger    | 分级日志、脱敏、子 logger                | `createLogger(cfg, runId?): LoggerHandle`（`logger`/`logFile`/`close`）；`logger.child({ module, runId })` |
 
 工具定义统一形态（阶段 3 落地）：
 
