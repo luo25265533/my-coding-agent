@@ -4,7 +4,7 @@ import { parse as parseEnv } from 'dotenv';
 import type { ZodError } from 'zod';
 import { ConfigError } from '../shared/errors.js';
 import type { LogLevel } from '../shared/types.js';
-import { envSchema, type LlmProvider } from './schema.js';
+import { envSchema, mockScriptSchema, type LlmProvider, type MockStep } from './schema.js';
 
 export interface AppConfig {
   readonly llm: {
@@ -19,6 +19,8 @@ export interface AppConfig {
     readonly workspace: string;
     readonly maxIterations: number;
     readonly confirmHighRisk: boolean;
+    /** 仅 mock provider 读取；为测试支撑配置 */
+    readonly mockScript: readonly MockStep[] | undefined;
   };
   readonly log: {
     readonly level: LogLevel;
@@ -72,6 +74,9 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
 
   assertInsideWorkspace(workspace, logDir);
 
+  const mockScript =
+    env.LLM_PROVIDER === 'mock' ? readMockScript(workspace, env.AGENT_MOCK_SCRIPT) : undefined;
+
   return Object.freeze({
     llm: Object.freeze({
       provider: env.LLM_PROVIDER,
@@ -85,6 +90,7 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
       workspace,
       maxIterations: env.AGENT_MAX_ITERATIONS,
       confirmHighRisk: env.AGENT_CONFIRM_HIGH_RISK,
+      mockScript,
     }),
     log: Object.freeze({
       level: env.AGENT_LOG_LEVEL,
@@ -129,6 +135,45 @@ function readEnvFile(filePath: string): Record<string, string> {
     throw new ConfigError(`Failed to read env file: ${filePath}`, { cause: error });
   }
   return parseEnv(content);
+}
+
+function readMockScript(
+  workspace: string,
+  scriptPath: string | undefined,
+): readonly MockStep[] | undefined {
+  if (scriptPath === undefined) {
+    return undefined;
+  }
+  const filePath = path.resolve(workspace, scriptPath);
+  const relative = path.relative(workspace, filePath);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ConfigError(
+      `AGENT_MOCK_SCRIPT must stay inside AGENT_WORKSPACE (workspace=${workspace}, script=${filePath})`,
+    );
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(filePath, 'utf8');
+  } catch (error) {
+    throw new ConfigError(`Failed to read AGENT_MOCK_SCRIPT: ${filePath}`, { cause: error });
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch (error) {
+    throw new ConfigError(`AGENT_MOCK_SCRIPT is not valid JSON: ${filePath}`, { cause: error });
+  }
+
+  const parsed = mockScriptSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ConfigError(
+      `Invalid AGENT_MOCK_SCRIPT (${filePath}):\n${formatIssues(parsed.error)}`,
+      { cause: parsed.error },
+    );
+  }
+  return Object.freeze(parsed.data);
 }
 
 function formatIssues(error: ZodError): string {

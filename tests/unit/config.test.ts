@@ -64,6 +64,20 @@ describe('校验失败', () => {
     );
   });
 
+  it('provider 非 mock 时缺 model 报错', () => {
+    expect(() =>
+      load({
+        LLM_PROVIDER: 'openai-compatible',
+        LLM_API_KEY: 'sk-x',
+        LLM_BASE_URL: 'https://api.example.com/v1',
+      }),
+    ).toThrow(/LLM_MODEL/);
+  });
+
+  it('mock provider 不要求 model', () => {
+    expect(load({ LLM_PROVIDER: 'mock' }).llm.model).toBeUndefined();
+  });
+
   it('未知 provider 报错', () => {
     expect(() => load({ LLM_PROVIDER: 'anthropic' })).toThrow(/LLM_PROVIDER/);
   });
@@ -172,6 +186,7 @@ describe('不可变性与脱敏', () => {
       LLM_PROVIDER: 'openai-compatible',
       LLM_API_KEY: 'sk-super-secret',
       LLM_BASE_URL: 'https://api.example.com/v1',
+      LLM_MODEL: 'some-model',
     });
     const redacted = redactConfig(config);
     expect(config.llm.apiKey).toBe('sk-super-secret');
@@ -181,5 +196,50 @@ describe('不可变性与脱敏', () => {
 
   it('未设置密钥时显示 unset 占位', () => {
     expect(redactConfig(load({})).llm.apiKey).toBe(UNSET);
+  });
+});
+
+describe('AGENT_MOCK_SCRIPT', () => {
+  it('mock provider 下读取脚本文件（相对 workspace）', () => {
+    writeFileSync(
+      path.join(cwd, 'script.json'),
+      JSON.stringify([
+        { toolCalls: [{ name: 'read_file', arguments: '{"path":"a.txt"}' }] },
+        { content: 'done' },
+      ]),
+    );
+
+    const config = load({ AGENT_MOCK_SCRIPT: 'script.json' });
+    expect(config.agent.mockScript).toEqual([
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"a.txt"}' }] },
+      { content: 'done' },
+    ]);
+  });
+
+  it('未配置时为 undefined', () => {
+    expect(load({}).agent.mockScript).toBeUndefined();
+  });
+
+  it('脚本路径越界报 ConfigError', () => {
+    expect(() => load({ AGENT_MOCK_SCRIPT: '../script.json' })).toThrow(/must stay inside/);
+  });
+
+  it('非 JSON 与结构非法均报 ConfigError', () => {
+    writeFileSync(path.join(cwd, 'bad.json'), 'not json');
+    expect(() => load({ AGENT_MOCK_SCRIPT: 'bad.json' })).toThrow(/not valid JSON/);
+
+    writeFileSync(path.join(cwd, 'shape.json'), JSON.stringify([{ content: 1 }]));
+    expect(() => load({ AGENT_MOCK_SCRIPT: 'shape.json' })).toThrow(/Invalid AGENT_MOCK_SCRIPT/);
+  });
+
+  it('非 mock provider 下忽略脚本文件', () => {
+    const config = load({
+      LLM_PROVIDER: 'openai-compatible',
+      LLM_API_KEY: 'k',
+      LLM_BASE_URL: 'https://x/v1',
+      LLM_MODEL: 'm',
+      AGENT_MOCK_SCRIPT: 'missing.json',
+    });
+    expect(config.agent.mockScript).toBeUndefined();
   });
 });

@@ -65,13 +65,13 @@
 
 | 模块      | 职责                                     | 关键契约                                                                                                   |
 | --------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| agent     | 执行循环、迭代上限、中止、状态机         | `AgentLoop.run(task, opts): Promise<AgentResult>`                                                          |
-| llm       | 供应商适配、流式、重试、超时、token 统计 | `LLMClient.chat(req): Promise<ChatResponse>` / `stream(req): AsyncIterable<Chunk>`                         |
+| agent     | 执行循环、迭代上限、中止、状态机         | `runAgentLoop(task, opts): Promise<AgentResult>`                                                           |
+| llm       | 供应商适配、流式、重试、超时、token 统计 | `LLMProvider.chat(req): Promise<ChatResponse>` / `stream(req): AsyncIterable<StreamChunk>`                 |
 | planner   | 任务拆解、重规划                         | `Planner.plan(task, ctx): Promise<Plan>`；`replan(plan, feedback)`                                         |
-| tools     | 注册表、参数校验、分发、结果规范化       | `ToolRegistry.register(def)`；`dispatch(call, ctx): Promise<ToolResult>`                                   |
+| tools     | 注册表、参数校验、分发、结果规范化       | `ToolRegistry.register(def)` / `specs()`；`dispatchToolCall(registry, call, ctx): Promise<ToolResult>`     |
 | context   | 上下文组装、token 预算、截断/压缩        | `ContextManager.build(task, history): Promise<Prompt>`                                                     |
 | memory    | 会话与长期记忆持久化                     | `MemoryStore.append(entry)`；`search(query)`                                                               |
-| security  | 路径沙箱、权限决策、命令风险分级         | `PathGuard.resolve(p): SafePath`；`PermissionGate.check(action): Promise<Decision>`                        |
+| security  | 路径沙箱、权限决策、命令风险分级         | `resolveInsideWorkspace(root, p)`；`assertNotSensitive(path)`（PermissionGate 阶段 4）                     |
 | evaluator | 跑验证命令、判定成败、给出重试建议       | `Evaluator.verify(plan, results): Promise<Verdict>`                                                        |
 | config    | .env 加载 + zod 校验 + 冻结              | `loadConfig(env): Readonly<AppConfig>`                                                                     |
 | logger    | 分级日志、脱敏、子 logger                | `createLogger(cfg, runId?): LoggerHandle`（`logger`/`logFile`/`close`）；`logger.child({ module, runId })` |
@@ -108,6 +108,10 @@ run(task)
   └─ 6. memory.append(run) + 输出报告
 ```
 
+阶段 3 已落地其中的最小子集：`llm.chat` 决策 → `security` 路径检查 → `tools.dispatch` →
+观察结果回填，循环到最终回答。`context` 预算、`planner`、`evaluator`、`memory` 在后续阶段接入，
+不改变本循环的骨架。
+
 ### 2.4 目录结构
 
 ```
@@ -132,19 +136,26 @@ tests/
 
 ## 三、开发路线图
 
-| 阶段 | 主题             | 交付物                                                                  | 关键验收                                    |
-| ---- | ---------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
-| 1    | 项目初始化       | TS 骨架、config、logger、CLI、lint/format/test 工具链                   | `agent run` 可启动，四类检查全绿            |
-| 2    | LLM 抽象层       | LLMClient 接口 + mock provider + OpenAI 兼容 provider、流式、重试、超时 | mock 下可复现对话；真实 provider 可流式返回 |
-| 3    | 安全与工具框架   | PathGuard、PermissionGate、命令风险分级、ToolRegistry、zod 校验         | 越界路径/密钥读取被拒；高风险命令触发确认   |
-| 4    | 基础工具集       | read/write/edit/glob/grep/bash 六个工具                                 | 每个工具有单测；edit 精确匹配失败可报错     |
-| 5    | 上下文管理       | ContextManager、token 预算、截断与压缩                                  | 超预算不崩溃；关键信息保留                  |
-| 6    | 规划与核心循环   | Planner + AgentLoop，端到端打通                                         | mock LLM 驱动完成一个真实改码任务           |
-| 7    | 结果验证         | Evaluator、测试执行、重规划                                             | 故意写坏代码时能判定失败并重试              |
-| 8    | 记忆持久化       | MemoryStore（JSONL 起步）、会话恢复                                     | 重启后可恢复上一次会话                      |
-| 9    | CLI 体验与总验收 | REPL、流式输出、确认交互、成本统计                                      | 真实供应商完成一个端到端任务并产出报告      |
+| 阶段 | 主题             | 交付物                                                                               | 关键验收                                    |
+| ---- | ---------------- | ------------------------------------------------------------------------------------ | ------------------------------------------- |
+| 1    | 项目初始化       | TS 骨架、config、logger、CLI、lint/format/test 工具链                                | `agent run` 可启动，四类检查全绿            |
+| 2    | LLM 抽象层       | LLMProvider 接口 + mock provider + OpenAI 兼容 provider、流式、重试、超时、chat REPL | mock 下可复现对话；真实 provider 可流式返回 |
+| 3    | 安全与工具框架   | PathGuard、敏感文件排除、ToolRegistry、zod 校验、三只读工具、AgentLoop、run 工具循环 | 模型自主调工具；越界路径/密钥读取被拒       |
+| 4    | 写工具与命令执行 | write/edit/bash 等工具、PermissionGate、命令风险分级                                 | 高风险命令触发确认；edit 失败可报错         |
+| 5    | 上下文管理       | ContextManager、token 预算、截断与压缩                                               | 超预算不崩溃；关键信息保留                  |
+| 6    | 规划与核心循环   | Planner + AgentLoop，端到端打通                                                      | mock LLM 驱动完成一个真实改码任务           |
+| 7    | 结果验证         | Evaluator、测试执行、重规划                                                          | 故意写坏代码时能判定失败并重试              |
+| 8    | 记忆持久化       | MemoryStore（JSONL 起步）、会话恢复                                                  | 重启后可恢复上一次会话                      |
+| 9    | CLI 体验与总验收 | REPL、流式输出、确认交互、成本统计                                                   | 真实供应商完成一个端到端任务并产出报告      |
 
 阶段 1 只交付基础设施，`run` 命令为骨架（不调用模型、不执行工具），避免提前扩大范围。
+
+阶段 2 按需求交付「能够持续对话的 CLI」，因此 REPL 与流式输出提前在此落地（原列于阶段 9）；
+历史仅存内存，会话落盘与 `--resume` 仍留到阶段 8。阶段 9 余下确认交互、成本统计与端到端总验收。
+
+阶段 3 已交付工具调用闭环：`read_file` / `list_files` / `search_code` 三个只读工具、最小 AgentLoop、
+`run` 升级为真正的任务入口。`PermissionGate` 与写类、命令执行工具顺延到阶段 4；
+`chat` REPL 工具化仍按原计划留到阶段 6。
 
 ## 四、技术选型
 

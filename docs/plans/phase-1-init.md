@@ -279,7 +279,7 @@ pnpm build && node dist/cli/main.js --version
 git diff          # 人工复核
 ```
 
-手工验收：`pnpm dev run "hello"` 能启动、能看到日志、`.agent/logs/*.jsonl` 有内容。
+手工验收：`pnpm dev "hello"` 能启动、能看到日志、`.agent/logs/*.jsonl` 有内容。（`dev` 已内置 `run`，见 9.6；旧写法 `pnpm dev run "hello"` 会把 `run` 当成任务文本。）
 
 ## 七、风险与应对
 
@@ -356,3 +356,22 @@ sonic-boom 通过 `fs.fsync` → `fs.close` 异步回调释放文件句柄。测
 - **eslint 9.39.5 已被官方标记 deprecated**（安装时警告：This version is no longer supported），其传递依赖 `glob@10.5.0` 也被标记含已公开的安全漏洞。这是方案 A 为兼容 Node 20.18.1 的必然代价。升级 Node 22 后应同步升 ESLint 10 / Vitest 5 / commander 15。
 - 日志目录的越界校验目前只做 `path.relative` 前缀判断，**未做 realpath 符号链接逃逸检查**，该项属阶段 3 PathGuard 范围。
 - 阶段 1 未引入 `openai` SDK，`LLM_PROVIDER=openai-compatible` 仅通过配置校验，不会真正发起请求。
+
+### 9.6 验收后修正：dev 脚本人机工程（2026-11-12）
+
+用户反馈「`npm run dev` 项目跑不起来」。排查结论：**不是缺陷**。在 Git Bash、PowerShell、cmd 三种 shell 下实测 `npm run dev` 均退出码 0，`node_modules` 完好、`tsx` 可解析、无 `package-lock.json` 污染。真实原因是 `dev` 脚本为 `tsx src/cli/main.ts`，不带子命令时 argv 为空，CLI 按设计打印帮助后正常退出；而阶段 1 没有交互循环，进程不会停留，因此被误判为「闪退」。
+
+经用户确认，采用「dev 默认启动 run」方案：
+
+| 脚本  | 修改前                | 修改后                        |
+| ----- | --------------------- | ----------------------------- |
+| `dev` | `tsx src/cli/main.ts` | `tsx src/cli/main.ts run`     |
+| `cli` | 无                    | `tsx src/cli/main.ts`（新增） |
+
+`cli` 保留原始透传能力，`--help` / `--version` / 其他子命令走它，避免 `dev` 内置 `run` 后无法访问顶层选项。
+
+实测结果（全部退出 0）：`npm run dev` 启动骨架且 task 为 `(none)`；`npm run dev -- "hello"` task 为 `hello`；`npm run cli -- --version` 输出 `0.1.0`；`pnpm dev "hello"`、`pnpm cli run --verbose "hello"`（DEBUG 正常输出）、`pnpm cli --help` 均正常。
+
+**测试无需改动**：单测直接调用 `main()`，集成测试直接 spawn 入口文件，两者都不经过 npm 脚本，故脚本调整不影响任何断言。门禁复跑：typecheck / lint / format:check / build 均 0 error，78/78 用例通过。
+
+README 同步更新启动示例，并显式写明 **npm 传参必须加 `--` 分隔符，pnpm 不需要**——这是本次误解的另一个诱因。

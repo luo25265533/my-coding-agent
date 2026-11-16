@@ -13,6 +13,16 @@ const optionalText = z
     return trimmed === undefined || trimmed === '' ? undefined : trimmed;
   });
 
+export const mockStepSchema = z.object({
+  content: z.string().optional(),
+  toolCalls: z.array(z.object({ name: z.string().min(1), arguments: z.string() })).optional(),
+  reasoning: z.string().optional(),
+});
+
+export const mockScriptSchema = z.array(mockStepSchema);
+
+export type MockStep = z.infer<typeof mockStepSchema>;
+
 function booleanFlag(defaultValue: 'true' | 'false') {
   return z
     .enum(['true', 'false', '1', '0'])
@@ -34,6 +44,8 @@ export const envSchema = z
     AGENT_LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
     AGENT_LOG_DIR: z.string().min(1).default('.agent/logs'),
     AGENT_LOG_PRETTY: booleanFlag('true'),
+    /** 仅 mock provider 使用：脚本化响应 JSON 的路径 */
+    AGENT_MOCK_SCRIPT: optionalText,
   })
   .superRefine((env, ctx) => {
     if (env.LLM_PROVIDER !== 'mock' && env.LLM_API_KEY === undefined) {
@@ -48,6 +60,13 @@ export const envSchema = z
         code: 'custom',
         path: ['LLM_BASE_URL'],
         message: 'required when LLM_PROVIDER=openai-compatible',
+      });
+    }
+    if (env.LLM_PROVIDER !== 'mock' && env.LLM_MODEL === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['LLM_MODEL'],
+        message: `required when LLM_PROVIDER=${env.LLM_PROVIDER}`,
       });
     }
   });

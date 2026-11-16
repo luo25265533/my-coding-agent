@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { runAgentLoop } from '../../agent/loop.js';
 import { loadConfig, redactConfig } from '../../config/load.js';
 import { createLogger } from '../../logger/index.js';
+import { createLLMProvider } from '../../llm/factory.js';
+import { createDefaultToolRegistry } from '../../tools/index.js';
+import { AgentError, describeError, ErrorCode } from '../../shared/errors.js';
 import { readPackageInfo } from '../../shared/package-info.js';
 import type { LogLevel } from '../../shared/types.js';
 
@@ -13,9 +17,20 @@ export interface RunOptions {
 export interface RunResult {
   readonly runId: string;
   readonly logFile: string;
+  readonly content: string;
+  readonly iterations: number;
+  readonly toolCalls: number;
+  readonly stopReason: 'answer' | 'max_iterations';
 }
 
-export function runCommand(task: readonly string[], options: RunOptions): RunResult {
+const NO_TASK_MESSAGE = 'a task is required: agent run "describe the task"';
+
+export async function runCommand(task: readonly string[], options: RunOptions): Promise<RunResult> {
+  const taskText = task.join(' ').trim();
+  if (taskText === '') {
+    throw new AgentError(ErrorCode.UsageInvalid, NO_TASK_MESSAGE);
+  }
+
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (options.workspace !== undefined) {
     env.AGENT_WORKSPACE = options.workspace;
@@ -29,29 +44,98 @@ export function runCommand(task: readonly string[], options: RunOptions): RunRes
   const runId = randomUUID();
   const { logger, logFile, close } = createLogger(config, runId);
   const log = logger.child({ module: 'cli' });
-  const taskText = task.join(' ').trim();
-  const redacted = redactConfig(config);
+  const agentLog = logger.child({ module: 'agent' });
 
-  log.info({ task: taskText, provider: config.llm.provider }, 'run started');
-  log.debug({ config: redacted }, 'configuration loaded');
+  const provider = createLLMProvider(config, { logger: agentLog });
+  const tools = createDefaultToolRegistry();
+
+  log.info({ task: taskText, provider: provider.name }, 'run started');
+  log.debug({ config: redactConfig(config) }, 'configuration loaded');
 
   const info = readPackageInfo();
-  const lines = [
-    `${info.name} v${info.version} (phase 1 skeleton)`,
-    `runId     : ${runId}`,
-    `workspace : ${config.agent.workspace}`,
-    `provider  : ${config.llm.provider}`,
-    `logFile   : ${logFile}`,
-    `task      : ${taskText === '' ? '(none)' : taskText}`,
-    '',
-    'config (redacted):',
-    JSON.stringify(redacted, null, 2),
-    '',
-    'Phase 1 does not call the LLM and does not execute any tool.',
-  ];
-  process.stdout.write(`${lines.join('\n')}\n`);
+  process.stdout.write(
+    [
+      `${info.name} v${info.version}`,
+      `runId     : ${runId}`,
+      `workspace : ${config.agent.workspace}`,
+      `provider  : ${provider.name}  model: ${config.llm.model ?? '(default)'}`,
+      `task      : ${taskText}`,
+      '',
+    ].join('\n'),
+  );
 
-  log.info('run finished');
-  close();
-  return { runId, logFile };
+  const controller = new AbortController();
+  const onSigint = (): void => {
+    controller.abort();
+  };
+  process.once('SIGINT', onSigint);
+
+  try {
+    const result = await runAgentLoop(taskText, {
+      provider,
+      tools,
+      workspace: config.agent.workspace,
+      maxIterations: config.agent.maxIterations,
+      signal: controller.signal,
+      logger: agentLog,
+      onToolCall: (call, iteration) => {
+        process.stdout.write(`[${iteration}] → ${call.name} ${compactArguments(call.arguments)}\n`);
+      },
+      onToolResult: (_call, toolResult, iteration, durationMs) => {
+        const status = toolResult.ok ? 'ok' : 'error';
+        const truncated = toolResult.truncated === true ? ', truncated' : '';
+        const errorCode = toolResult.meta?.['code'];
+        const detail = typeof errorCode === 'string' ? `: ${errorCode}` : '';
+        process.stdout.write(
+          `[${iteration}] ← ${status} ${toolResult.content.length} chars (${durationMs}ms${truncated})${detail}\n`,
+        );
+      },
+    });
+
+    if (result.content !== '' && result.stopReason === 'answer') {
+      process.stdout.write(`\nanswer:\n${result.content}\n`);
+    }
+    process.stdout.write(
+      `tokens: prompt=${result.usage.promptTokens} completion=${result.usage.completionTokens} total=${result.usage.totalTokens}  iterations=${result.iterations}  tools=${result.toolCalls}\n`,
+    );
+
+    if (result.stopReason === 'max_iterations') {
+      throw new AgentError(
+        ErrorCode.AgentMaxIterations,
+        `no final answer after ${result.iterations} iterations; raise AGENT_MAX_ITERATIONS or narrow the task`,
+      );
+    }
+
+    log.info(
+      {
+        iterations: result.iterations,
+        toolCalls: result.toolCalls,
+        stopReason: result.stopReason,
+        usage: result.usage,
+      },
+      'run finished',
+    );
+    return {
+      runId,
+      logFile,
+      content: result.content,
+      iterations: result.iterations,
+      toolCalls: result.toolCalls,
+      stopReason: result.stopReason,
+    };
+  } catch (error) {
+    log.error({ reason: describeError(error) }, 'run failed');
+    throw error;
+  } finally {
+    process.off('SIGINT', onSigint);
+    close();
+  }
+}
+
+function compactArguments(argumentsText: string): string {
+  const singleLine = argumentsText.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= 200) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, 200)}…`;
 }

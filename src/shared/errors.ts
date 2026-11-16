@@ -11,6 +11,15 @@ export const ErrorCode = {
   UsageInvalid: 'USAGE_INVALID',
   LogSetupFailed: 'LOG_SETUP_FAILED',
   Internal: 'INTERNAL_ERROR',
+  LlmAuth: 'LLM_AUTH',
+  LlmQuota: 'LLM_QUOTA',
+  LlmRateLimit: 'LLM_RATE_LIMIT',
+  LlmTimeout: 'LLM_TIMEOUT',
+  LlmNetwork: 'LLM_NETWORK',
+  LlmBadResponse: 'LLM_BAD_RESPONSE',
+  LlmAborted: 'LLM_ABORTED',
+  PathDenied: 'PATH_DENIED',
+  AgentMaxIterations: 'AGENT_MAX_ITERATIONS',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -20,6 +29,15 @@ const EXIT_CODE_BY_ERROR_CODE: Record<ErrorCode, ExitCode> = {
   [ErrorCode.UsageInvalid]: ExitCode.UsageError,
   [ErrorCode.LogSetupFailed]: ExitCode.RuntimeError,
   [ErrorCode.Internal]: ExitCode.RuntimeError,
+  [ErrorCode.LlmAuth]: ExitCode.RuntimeError,
+  [ErrorCode.LlmQuota]: ExitCode.RuntimeError,
+  [ErrorCode.LlmRateLimit]: ExitCode.RuntimeError,
+  [ErrorCode.LlmTimeout]: ExitCode.RuntimeError,
+  [ErrorCode.LlmNetwork]: ExitCode.RuntimeError,
+  [ErrorCode.LlmBadResponse]: ExitCode.RuntimeError,
+  [ErrorCode.LlmAborted]: ExitCode.RuntimeError,
+  [ErrorCode.PathDenied]: ExitCode.RuntimeError,
+  [ErrorCode.AgentMaxIterations]: ExitCode.RuntimeError,
 };
 
 export class AgentError extends Error {

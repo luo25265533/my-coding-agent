@@ -77,12 +77,15 @@ function readLogLines(): Record<string, unknown>[] {
 }
 
 describe('源码入口（tsx 直跑）', () => {
-  it('run 命令退出 0、打印骨架标识并写出 JSONL 日志', () => {
+  it('run 命令退出 0、回答任务并写出 JSONL 日志', () => {
     const run = runCli(sourceCli, ['run', 'demo', 'task']);
     expect(run.stderr).toBe('');
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('phase 1 skeleton');
+    expect(run.stdout).not.toContain('phase 1 skeleton');
     expect(run.stdout).toContain('demo task');
+    expect(run.stdout).toContain('answer:');
+    expect(run.stdout).toContain('echo: demo task');
+    expect(run.stdout).toContain('iterations=1  tools=0');
 
     const lines = readLogLines();
     expect(lines.length).toBeGreaterThanOrEqual(2);
@@ -98,6 +101,12 @@ describe('源码入口（tsx 直跑）', () => {
     expect(lines.some((line) => line.msg === 'run finished')).toBe(true);
   }, 60_000);
 
+  it('无任务时退出 2 并提示缺少任务', () => {
+    const run = runCli(sourceCli, ['run']);
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('task is required');
+  }, 60_000);
+
   it('--version 与 package.json 一致', () => {
     const run = runCli(sourceCli, ['--version']);
     expect(run.status).toBe(0);
@@ -110,7 +119,7 @@ describe('源码入口（tsx 直跑）', () => {
   }, 60_000);
 
   it('日志目录越界时退出 2 且不创建目录', () => {
-    const run = runCli(sourceCli, ['run'], { AGENT_LOG_DIR: '../escaped-logs' });
+    const run = runCli(sourceCli, ['run', 'escape check'], { AGENT_LOG_DIR: '../escaped-logs' });
     expect(run.status).toBe(2);
     expect(run.stderr).toContain('must stay inside');
     expect(existsSync(path.join(workspace, 'logs'))).toBe(false);
@@ -121,24 +130,26 @@ describe('源码入口（tsx 直跑）', () => {
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('INFO');
     expect(run.stdout).toContain('run started');
-    expect(run.stdout).toContain('phase 1 skeleton');
+    expect(run.stdout).toContain('echo: pretty demo');
 
     const lines = readLogLines();
     expect(lines.length).toBeGreaterThanOrEqual(2);
     expect(lines.some((line) => line.msg === 'run started')).toBe(true);
   }, 60_000);
 
-  it('真实密钥不出现在 stdout 与日志文件中', () => {
+  it('真实密钥不出现在 stdout、stderr 与日志文件中', () => {
     const secret = 'sk-smoke-top-secret';
     const run = runCli(sourceCli, ['run', 'secret check'], {
       LLM_PROVIDER: 'openai-compatible',
       LLM_API_KEY: secret,
-      LLM_BASE_URL: 'https://api.example.com/v1',
+      LLM_BASE_URL: 'http://127.0.0.1:1/v1',
       LLM_MODEL: 'some-model',
+      LLM_MAX_RETRIES: '0',
     });
-    expect(run.status).toBe(0);
-    expect(run.stdout).toContain('[REDACTED]');
+    // 网络失败是预期路径：本用例只关心密钥不被打印
+    expect(run.status).toBe(1);
     expect(run.stdout).not.toContain(secret);
+    expect(run.stderr).not.toContain(secret);
 
     const file = logFilePath();
     expect(existsSync(file)).toBe(true);
@@ -157,13 +168,15 @@ describe('构建产物入口（node dist）', () => {
     const run = runCli(distCli, ['run', 'dist demo']);
     expect(run.stderr).toBe('');
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('phase 1 skeleton');
-    expect(run.stdout).toContain('dist demo');
+    expect(run.stdout).toContain('echo: dist demo');
     expect(readLogLines().length).toBeGreaterThanOrEqual(2);
   }, 60_000);
 
   it('配置错误退出 2', () => {
-    const run = runCli(distCli, ['run'], { LLM_PROVIDER: 'openai-compatible', LLM_API_KEY: '' });
+    const run = runCli(distCli, ['run', 'config check'], {
+      LLM_PROVIDER: 'openai-compatible',
+      LLM_API_KEY: '',
+    });
     expect(run.status).toBe(2);
     expect(run.stderr).toContain('LLM_API_KEY');
   }, 60_000);

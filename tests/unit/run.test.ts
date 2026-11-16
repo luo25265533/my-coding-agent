@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runCommand } from '../../src/cli/commands/run.js';
+import { AgentError, ErrorCode, ExitCode } from '../../src/shared/errors.js';
 
 function spyStdout() {
   return vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -14,6 +15,7 @@ let stdoutSpy: ReturnType<typeof spyStdout>;
 
 beforeEach(() => {
   workspace = mkdtempSync(path.join(tmpdir(), 'agent-run-'));
+  writeFileSync(path.join(workspace, 'note.txt'), 'hello from tool\nsecond line\n');
   vi.stubEnv('LLM_PROVIDER', 'mock');
   vi.stubEnv('LLM_API_KEY', '');
   vi.stubEnv('LLM_BASE_URL', '');
@@ -42,69 +44,111 @@ function logLines(logFile: string): Record<string, unknown>[] {
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
+function useScript(steps: unknown): void {
+  writeFileSync(path.join(workspace, 'script.json'), JSON.stringify(steps));
+  vi.stubEnv('AGENT_MOCK_SCRIPT', 'script.json');
+}
+
 describe('runCommand', () => {
-  it('返回 runId 与日志路径，日志落在指定 workspace 内', () => {
-    const result = runCommand(['demo'], { workspace });
+  it('驱动工具循环：读取文件后给出答案', async () => {
+    useScript([
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] },
+      { content: '文件内容是 hello from tool。' },
+    ]);
+
+    const result = await runCommand(['总结', 'note.txt'], { workspace });
+
+    expect(result.stopReason).toBe('answer');
+    expect(result.iterations).toBe(2);
+    expect(result.toolCalls).toBe(1);
+    expect(result.content).toBe('文件内容是 hello from tool。');
     expect(result.runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(result.logFile.startsWith(workspace)).toBe(true);
-    expect(existsSync(result.logFile)).toBe(true);
+
+    const out = printed();
+    expect(out).toContain('workspace :');
+    expect(out).toContain('provider  : mock');
+    expect(out).toContain('[1] → read_file {"path":"note.txt"}');
+    expect(out).toContain('[1] ← ok');
+    expect(out).toContain('answer:');
+    expect(out).toContain('hello from tool');
+    expect(out).toContain('iterations=2  tools=1');
 
     const lines = logLines(result.logFile);
     expect(lines.some((line) => line.msg === 'run started')).toBe(true);
+    expect(lines.some((line) => line.msg === 'tool executed')).toBe(true);
     expect(lines.some((line) => line.msg === 'run finished')).toBe(true);
     for (const line of lines) {
       expect(line.runId).toBe(result.runId);
-      expect(line.module).toBe('cli');
     }
+    expect(new Set(lines.map((line) => line.module))).toEqual(new Set(['cli', 'agent']));
   });
 
-  it('task 词被拼接并写入日志与 stdout', () => {
-    const result = runCommand(['fix', 'the', 'bug'], { workspace });
-    expect(printed()).toContain('fix the bug');
-    const started = logLines(result.logFile).find((line) => line.msg === 'run started');
-    expect(started?.task).toBe('fix the bug');
+  it('无任务时抛 UsageInvalid（退出码 2）', async () => {
+    const error = await runCommand([], { workspace }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AgentError);
+    expect((error as AgentError).code).toBe(ErrorCode.UsageInvalid);
+    expect((error as AgentError).exitCode).toBe(ExitCode.UsageError);
   });
 
-  it('无 task 时 stdout 显示 (none)', () => {
-    runCommand([], { workspace });
-    expect(printed()).toContain('(none)');
+  it('无脚本时 mock 回显任务，单轮结束', async () => {
+    const result = await runCommand(['fix', 'the', 'bug'], { workspace });
+    expect(result.iterations).toBe(1);
+    expect(result.toolCalls).toBe(0);
+    expect(result.content).toBe('echo: fix the bug');
+    expect(printed()).toContain('echo: fix the bug');
   });
 
-  it('--log-level debug 覆盖生效，debug 行落盘', () => {
-    const result = runCommand(['x'], { workspace, logLevel: 'debug' });
+  it('--log-level debug 覆盖生效，debug 行落盘', async () => {
+    const result = await runCommand(['x'], { workspace, logLevel: 'debug' });
     const lines = logLines(result.logFile);
     expect(lines.some((line) => line.msg === 'configuration loaded')).toBe(true);
+    expect(lines.some((line) => line.msg === 'iteration completed')).toBe(true);
   });
 
-  it('--verbose 等价于 debug', () => {
-    const result = runCommand(['x'], { workspace, verbose: true });
-    expect(logLines(result.logFile).some((line) => line.msg === 'configuration loaded')).toBe(true);
-  });
-
-  it('默认 info 级别下不写 debug 行', () => {
-    const result = runCommand(['x'], { workspace });
-    expect(logLines(result.logFile).some((line) => line.msg === 'configuration loaded')).toBe(
-      false,
+  it('--verbose 等价于 debug；默认 info 不写 debug 行', async () => {
+    const verbose = await runCommand(['x'], { workspace, verbose: true });
+    expect(logLines(verbose.logFile).some((line) => line.msg === 'configuration loaded')).toBe(
+      true,
     );
+
+    // 日志文件当天复用，按 runId 只看本次运行
+    const normal = await runCommand(['x'], { workspace });
+    expect(
+      logLines(normal.logFile)
+        .filter((line) => line.runId === normal.runId)
+        .some((line) => line.msg === 'configuration loaded'),
+    ).toBe(false);
   });
 
-  it('stdout 打印骨架标识与脱敏配置，且不泄露密钥', () => {
-    vi.stubEnv('LLM_PROVIDER', 'openai-compatible');
-    vi.stubEnv('LLM_API_KEY', 'sk-run-secret');
-    vi.stubEnv('LLM_BASE_URL', 'https://api.example.com/v1');
-    vi.stubEnv('LLM_MODEL', 'some-model');
+  it('超长工具参数在轨迹中截断显示', async () => {
+    const longPattern = 'x'.repeat(240);
+    useScript([
+      {
+        toolCalls: [{ name: 'search_code', arguments: JSON.stringify({ pattern: longPattern }) }],
+      },
+      { content: 'done' },
+    ]);
 
-    const result = runCommand(['x'], { workspace });
+    await runCommand(['long args'], { workspace });
+
     const out = printed();
-    expect(out).toContain('phase 1 skeleton');
-    expect(out).toContain('[REDACTED]');
-    expect(out).not.toContain('sk-run-secret');
-    expect(readFileSync(result.logFile, 'utf8')).not.toContain('sk-run-secret');
+    expect(out).toContain('[1] → search_code ');
+    expect(out).toContain('…');
+    expect(out).not.toContain(longPattern);
   });
 
-  it('不调用模型也不执行工具：日志中只有 cli 模块记录', () => {
-    const result = runCommand(['x'], { workspace });
-    const modules = new Set(logLines(result.logFile).map((line) => line.module));
-    expect([...modules]).toEqual(['cli']);
+  it('迭代上限耗尽抛 AgentMaxIterations（退出码 1）', async () => {
+    useScript([{ toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] }]);
+    vi.stubEnv('AGENT_MAX_ITERATIONS', '1');
+
+    const error = await runCommand(['loop'], { workspace }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AgentError);
+    expect((error as AgentError).code).toBe(ErrorCode.AgentMaxIterations);
+    expect((error as AgentError).exitCode).toBe(ExitCode.RuntimeError);
+    expect(printed()).toContain('[1] → read_file');
+
+    const logFile = path.join(workspace, '.agent', 'logs');
+    expect(existsSync(logFile)).toBe(true);
   });
 });

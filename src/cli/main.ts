@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
 import { pathToFileURL } from 'node:url';
+import { chatCommand, type ChatOptions } from './commands/chat.js';
 import { runCommand, type RunOptions } from './commands/run.js';
 import { describeError, ExitCode, toExitCode } from '../shared/errors.js';
 import { readPackageInfo } from '../shared/package-info.js';
@@ -27,7 +28,7 @@ export function buildProgram(): Command {
 
   program
     .command('run')
-    .description('run the agent skeleton (phase 1: no LLM call, no tool execution)')
+    .description('run the agent on a task: the model chooses and calls tools until it answers')
     .argument('[task...]', 'task description')
     .option('--workspace <path>', 'override AGENT_WORKSPACE')
     .option(
@@ -36,8 +37,24 @@ export function buildProgram(): Command {
       parseLogLevel,
     )
     .option('--verbose', 'shorthand for --log-level debug')
-    .action((task: string[], options: RunOptions) => {
-      runCommand(task, options);
+    .action(async (task: string[], options: RunOptions) => {
+      await runCommand(task, options);
+    });
+
+  program
+    .command('chat')
+    .description('interactive multi-turn chat with the configured LLM provider')
+    .option('--workspace <path>', 'override AGENT_WORKSPACE')
+    .option(
+      '--log-level <level>',
+      `override AGENT_LOG_LEVEL (${LOG_LEVELS.join('|')})`,
+      parseLogLevel,
+    )
+    .option('--verbose', 'shorthand for --log-level debug')
+    .option('--system <prompt>', 'override the system prompt')
+    .option('--model <name>', 'override LLM_MODEL')
+    .action(async (options: ChatOptions) => {
+      await chatCommand(options);
     });
 
   return program;
