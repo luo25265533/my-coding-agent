@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { runAgentLoop } from '../../src/agent/loop.js';
 import { createMockProvider } from '../../src/llm/providers/mock.js';
@@ -11,8 +12,8 @@ import {
   type StreamChunk,
   type TokenUsage,
 } from '../../src/llm/types.js';
-import { ToolRegistry } from '../../src/tools/index.js';
-import { ErrorCode } from '../../src/shared/errors.js';
+import { ToolRegistry, errorResult } from '../../src/tools/index.js';
+import { AgentError, ErrorCode } from '../../src/shared/errors.js';
 
 function echoRegistry(): ToolRegistry {
   return new ToolRegistry().register({
@@ -25,6 +26,41 @@ function echoRegistry(): ToolRegistry {
 }
 
 const signal = (): AbortSignal => new AbortController().signal;
+
+const silentLogger = pino({ level: 'silent' });
+
+function failingRegistry(): ToolRegistry {
+  return echoRegistry().register({
+    name: 'fail',
+    description: 'always fails',
+    parameters: z.object({ text: z.string() }),
+    riskLevel: 'low',
+    execute: () => Promise.resolve(errorResult('TOOL_FAILED', 'boom')),
+  });
+}
+
+function fixedProvider(response: ChatResponse): LLMProvider {
+  return {
+    name: 'fixed',
+    chat: () => Promise.resolve(response),
+    async *stream(): AsyncIterable<StreamChunk> {
+      await Promise.resolve();
+      yield* [] as StreamChunk[];
+    },
+  };
+}
+
+function responseOf(overrides: Partial<ChatResponse>): ChatResponse {
+  return {
+    content: '',
+    reasoningContent: undefined,
+    finishReason: 'stop',
+    usage: EMPTY_USAGE,
+    model: 'fixed',
+    toolCalls: [],
+    ...overrides,
+  };
+}
 
 describe('runAgentLoop', () => {
   it('执行单次工具调用后返回最终答案，回调顺序正确', async () => {
@@ -223,5 +259,186 @@ describe('runAgentLoop', () => {
       toolCallId: 'call_1',
       content: 'hi',
     });
+  });
+
+  it('多步任务：连续三轮工具调用后给出答案', async () => {
+    const provider = createMockProvider({
+      script: [
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"step1"}' }] },
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"step2"}' }] },
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"step3"}' }] },
+        { content: 'done after 3 steps' },
+      ],
+    });
+    const observed: string[] = [];
+
+    const result = await runAgentLoop('multi step', {
+      provider,
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 10,
+      signal: signal(),
+      onToolResult: (_call, toolResult) => observed.push(toolResult.content),
+    });
+
+    expect(result).toMatchObject({
+      content: 'done after 3 steps',
+      iterations: 4,
+      toolCalls: 3,
+      stopReason: 'answer',
+    });
+    expect(observed).toEqual(['step1', 'step2', 'step3']);
+  });
+
+  it('空白答案视为未完成', async () => {
+    const result = await runAgentLoop('empty', {
+      provider: fixedProvider(responseOf({ content: '   \n' })),
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 3,
+      signal: signal(),
+    });
+
+    expect(result.stopReason).toBe('empty_answer');
+    expect(result.iterations).toBe(1);
+  });
+
+  it('答案因 maxTokens 截断时视为未完成', async () => {
+    const result = await runAgentLoop('truncated', {
+      provider: fixedProvider(responseOf({ content: 'partial answer', finishReason: 'length' })),
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 3,
+      signal: signal(),
+    });
+
+    expect(result.stopReason).toBe('output_truncated');
+    expect(result.content).toBe('partial answer');
+  });
+
+  it('同一工具与参数连续出现时熔断', async () => {
+    const repeated = { toolCalls: [{ name: 'echo', arguments: '{"text":"same"}' }] };
+    const provider = createMockProvider({ script: [repeated, repeated, repeated] });
+
+    const result = await runAgentLoop('repeat', {
+      provider,
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 10,
+      signal: signal(),
+      logger: silentLogger,
+    });
+
+    expect(result.stopReason).toBe('repeated_tool_call');
+    expect(result.toolCalls).toBe(2);
+    expect(result.iterations).toBe(3);
+  });
+
+  it('重复阈值可通过选项收紧', async () => {
+    const repeated = { toolCalls: [{ name: 'echo', arguments: '{"text":"same"}' }] };
+    const provider = createMockProvider({ script: [repeated, repeated] });
+
+    const result = await runAgentLoop('repeat', {
+      provider,
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 10,
+      maxRepeatedCalls: 2,
+      signal: signal(),
+    });
+
+    expect(result.stopReason).toBe('repeated_tool_call');
+    expect(result.toolCalls).toBe(1);
+  });
+
+  it('穿插不同调用时重复计数会重置', async () => {
+    const provider = createMockProvider({
+      script: [
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"a"}' }] },
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"b"}' }] },
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"a"}' }] },
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"a"}' }] },
+        { content: 'finished' },
+      ],
+    });
+
+    const result = await runAgentLoop('interleaved', {
+      provider,
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 10,
+      signal: signal(),
+    });
+
+    expect(result.stopReason).toBe('answer');
+    expect(result.toolCalls).toBe(4);
+  });
+
+  it('连续多轮工具全部失败时熔断', async () => {
+    const provider = createMockProvider({
+      script: [
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"1"}' }] },
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"2"}' }] },
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"3"}' }] },
+      ],
+    });
+
+    const result = await runAgentLoop('failing', {
+      provider,
+      tools: failingRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 10,
+      signal: signal(),
+      logger: silentLogger,
+    });
+
+    expect(result.stopReason).toBe('tool_failure_limit');
+    expect(result.toolCalls).toBe(3);
+    expect(result.iterations).toBe(3);
+  });
+
+  it('中间出现成功的工具调用会清零失败计数', async () => {
+    const provider = createMockProvider({
+      script: [
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"1"}' }] },
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"2"}' }] },
+        { toolCalls: [{ name: 'echo', arguments: '{"text":"ok"}' }] },
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"3"}' }] },
+        { toolCalls: [{ name: 'fail', arguments: '{"text":"4"}' }] },
+        { content: 'recovered' },
+      ],
+    });
+
+    const result = await runAgentLoop('recover', {
+      provider,
+      tools: failingRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 10,
+      signal: signal(),
+    });
+
+    expect(result.stopReason).toBe('answer');
+    expect(result.toolCalls).toBe(5);
+  });
+
+  it('provider 异常原样冒泡，不转成停止原因', async () => {
+    const provider: LLMProvider = {
+      name: 'boom',
+      chat: () => Promise.reject(new AgentError(ErrorCode.LlmNetwork, 'offline')),
+      async *stream(): AsyncIterable<StreamChunk> {
+        await Promise.resolve();
+        yield* [] as StreamChunk[];
+      },
+    };
+
+    await expect(
+      runAgentLoop('network down', {
+        provider,
+        tools: echoRegistry(),
+        workspace: process.cwd(),
+        maxIterations: 3,
+        signal: signal(),
+      }),
+    ).rejects.toMatchObject({ code: ErrorCode.LlmNetwork });
   });
 });

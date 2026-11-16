@@ -18,6 +18,8 @@ export interface AppConfig {
   readonly agent: {
     readonly workspace: string;
     readonly maxIterations: number;
+    readonly maxRepeatedCalls: number;
+    readonly maxConsecutiveFailures: number;
     readonly confirmHighRisk: boolean;
     /** 仅 mock provider 读取；为测试支撑配置 */
     readonly mockScript: readonly MockStep[] | undefined;
@@ -89,6 +91,8 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     agent: Object.freeze({
       workspace,
       maxIterations: env.AGENT_MAX_ITERATIONS,
+      maxRepeatedCalls: env.AGENT_MAX_REPEATED_CALLS,
+      maxConsecutiveFailures: env.AGENT_MAX_CONSECUTIVE_FAILURES,
       confirmHighRisk: env.AGENT_CONFIRM_HIGH_RISK,
       mockScript,
     }),

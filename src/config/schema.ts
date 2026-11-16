@@ -40,6 +40,8 @@ export const envSchema = z
     LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
     AGENT_WORKSPACE: z.string().min(1).default('.'),
     AGENT_MAX_ITERATIONS: z.coerce.number().int().min(1).max(200).default(20),
+    AGENT_MAX_REPEATED_CALLS: z.coerce.number().int().min(2).max(100).default(3),
+    AGENT_MAX_CONSECUTIVE_FAILURES: z.coerce.number().int().min(1).max(100).default(3),
     AGENT_CONFIRM_HIGH_RISK: booleanFlag('true'),
     AGENT_LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
     AGENT_LOG_DIR: z.string().min(1).default('.agent/logs'),

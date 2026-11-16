@@ -138,6 +138,17 @@ describe('runCommand', () => {
     expect(out).not.toContain(longPattern);
   });
 
+  it('空答案抛 AgentIncomplete（退出码 1）', async () => {
+    useScript([{ content: '' }]);
+
+    const error = await runCommand(['answer'], { workspace }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AgentError);
+    expect((error as AgentError).code).toBe(ErrorCode.AgentIncomplete);
+    expect((error as AgentError).exitCode).toBe(ExitCode.RuntimeError);
+    expect((error as Error).message).toContain('empty_answer');
+    expect(printed()).toContain('iterations=1  tools=0');
+  });
+
   it('迭代上限耗尽抛 AgentMaxIterations（退出码 1）', async () => {
     useScript([{ toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] }]);
     vi.stubEnv('AGENT_MAX_ITERATIONS', '1');

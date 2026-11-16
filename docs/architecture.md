@@ -71,7 +71,7 @@
 | tools     | 注册表、参数校验、分发、结果规范化       | `ToolRegistry.register(def)` / `specs()`；`dispatchToolCall(registry, call, ctx): Promise<ToolResult>`     |
 | context   | 上下文组装、token 预算、截断/压缩        | `ContextManager.build(task, history): Promise<Prompt>`                                                     |
 | memory    | 会话与长期记忆持久化                     | `MemoryStore.append(entry)`；`search(query)`                                                               |
-| security  | 路径沙箱、权限决策、命令风险分级         | `resolveInsideWorkspace(root, p)`；`assertNotSensitive(path)`（PermissionGate 阶段 4）                     |
+| security  | 路径沙箱、权限决策、命令风险分级         | `resolveInsideWorkspace(root, p)`；`assertNotSensitive(path)`（PermissionGate 后续阶段）                   |
 | evaluator | 跑验证命令、判定成败、给出重试建议       | `Evaluator.verify(plan, results): Promise<Verdict>`                                                        |
 | config    | .env 加载 + zod 校验 + 冻结              | `loadConfig(env): Readonly<AppConfig>`                                                                     |
 | logger    | 分级日志、脱敏、子 logger                | `createLogger(cfg, runId?): LoggerHandle`（`logger`/`logFile`/`close`）；`logger.child({ module, runId })` |
@@ -87,6 +87,20 @@ interface ToolDefinition<P = unknown> {
   execute(params: P, ctx: ToolContext): Promise<ToolResult>;
 }
 ```
+
+Agent 循环的停止原因（阶段 4 落地）：
+
+```ts
+type AgentStopReason =
+  | 'answer' // 无工具调用且答案非空
+  | 'empty_answer' // 无工具调用但答案为空
+  | 'output_truncated' // finish_reason === 'length'
+  | 'repeated_tool_call' // 同一工具+参数连续达到阈值
+  | 'tool_failure_limit' // 连续多轮工具全部失败
+  | 'max_iterations'; // 迭代预算耗尽
+```
+
+只有 `answer` 视为成功；其余由 CLI 映射为运行时错误并退出 1。
 
 ### 2.3 核心循环（single agent）
 
@@ -109,7 +123,8 @@ run(task)
 ```
 
 阶段 3 已落地其中的最小子集：`llm.chat` 决策 → `security` 路径检查 → `tools.dispatch` →
-观察结果回填，循环到最终回答。`context` 预算、`planner`、`evaluator`、`memory` 在后续阶段接入，
+观察结果回填，循环到最终回答。阶段 4 补齐结束判定（空答案/截断）与循环熔断（重复调用、
+连续失败），并验证多步任务。`context` 预算、`planner`、`evaluator`、`memory` 在后续阶段接入，
 不改变本循环的骨架。
 
 ### 2.4 目录结构
@@ -141,7 +156,7 @@ tests/
 | 1    | 项目初始化       | TS 骨架、config、logger、CLI、lint/format/test 工具链                                | `agent run` 可启动，四类检查全绿            |
 | 2    | LLM 抽象层       | LLMProvider 接口 + mock provider + OpenAI 兼容 provider、流式、重试、超时、chat REPL | mock 下可复现对话；真实 provider 可流式返回 |
 | 3    | 安全与工具框架   | PathGuard、敏感文件排除、ToolRegistry、zod 校验、三只读工具、AgentLoop、run 工具循环 | 模型自主调工具；越界路径/密钥读取被拒       |
-| 4    | 写工具与命令执行 | write/edit/bash 等工具、PermissionGate、命令风险分级                                 | 高风险命令触发确认；edit 失败可报错         |
+| 4    | Agent Core 加固  | 结束判定、重复调用与连续失败熔断、多步任务测试、CLI 停止原因映射                     | 多步任务自主完成；异常有明确停止原因        |
 | 5    | 上下文管理       | ContextManager、token 预算、截断与压缩                                               | 超预算不崩溃；关键信息保留                  |
 | 6    | 规划与核心循环   | Planner + AgentLoop，端到端打通                                                      | mock LLM 驱动完成一个真实改码任务           |
 | 7    | 结果验证         | Evaluator、测试执行、重规划                                                          | 故意写坏代码时能判定失败并重试              |
@@ -154,8 +169,11 @@ tests/
 历史仅存内存，会话落盘与 `--resume` 仍留到阶段 8。阶段 9 余下确认交互、成本统计与端到端总验收。
 
 阶段 3 已交付工具调用闭环：`read_file` / `list_files` / `search_code` 三个只读工具、最小 AgentLoop、
-`run` 升级为真正的任务入口。`PermissionGate` 与写类、命令执行工具顺延到阶段 4；
-`chat` REPL 工具化仍按原计划留到阶段 6。
+`run` 升级为真正的任务入口。`chat` REPL 工具化仍按原计划留到阶段 6。
+
+阶段 4 按用户要求重新定义为 **Agent Core 加固**（而非原路线图的写工具）：结束判定、
+重复调用/连续失败熔断、多步任务验证。原路线图的写工具与命令执行（write/edit/bash +
+PermissionGate）顺延，插入在阶段 4 之后实施；阶段 5-9 的编号与主题保持不变。
 
 ## 四、技术选型
 

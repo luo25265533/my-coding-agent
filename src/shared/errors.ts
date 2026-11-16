@@ -20,6 +20,7 @@ export const ErrorCode = {
   LlmAborted: 'LLM_ABORTED',
   PathDenied: 'PATH_DENIED',
   AgentMaxIterations: 'AGENT_MAX_ITERATIONS',
+  AgentIncomplete: 'AGENT_INCOMPLETE',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -38,6 +39,7 @@ const EXIT_CODE_BY_ERROR_CODE: Record<ErrorCode, ExitCode> = {
   [ErrorCode.LlmAborted]: ExitCode.RuntimeError,
   [ErrorCode.PathDenied]: ExitCode.RuntimeError,
   [ErrorCode.AgentMaxIterations]: ExitCode.RuntimeError,
+  [ErrorCode.AgentIncomplete]: ExitCode.RuntimeError,
 };
 
 export class AgentError extends Error {

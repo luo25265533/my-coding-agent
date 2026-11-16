@@ -2,7 +2,7 @@ import type { Logger } from 'pino';
 import { dispatchToolCall } from '../tools/dispatch.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ToolResult } from '../tools/types.js';
-import type { ChatMessage, LLMProvider, TokenUsage, ToolCall } from '../llm/types.js';
+import type { ChatMessage, ChatResponse, LLMProvider, TokenUsage, ToolCall } from '../llm/types.js';
 import { addUsage, EMPTY_USAGE } from '../llm/types.js';
 import { throwIfAborted } from '../shared/abort.js';
 
@@ -13,6 +13,17 @@ export const AGENT_SYSTEM_PROMPT = `You are a coding agent working inside a sand
 - Tool arguments are JSON and must match the provided schemas. If a tool returns an error, fix the arguments and retry.
 - Do not guess file contents. When you have enough information, answer the task concisely.`;
 
+export type AgentStopReason =
+  | 'answer'
+  | 'empty_answer'
+  | 'output_truncated'
+  | 'repeated_tool_call'
+  | 'tool_failure_limit'
+  | 'max_iterations';
+
+const DEFAULT_MAX_REPEATED_CALLS = 3;
+const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
+
 export interface AgentLoopOptions {
   readonly provider: LLMProvider;
   readonly tools: ToolRegistry;
@@ -21,6 +32,10 @@ export interface AgentLoopOptions {
   readonly signal: AbortSignal;
   readonly logger?: Logger | undefined;
   readonly systemPrompt?: string | undefined;
+  /** 同一工具+参数连续出现的最大次数；达到即熔断 */
+  readonly maxRepeatedCalls?: number | undefined;
+  /** 连续多少轮工具全部失败后熔断 */
+  readonly maxConsecutiveFailures?: number | undefined;
   readonly onToolCall?: ((call: ToolCall, iteration: number) => void) | undefined;
   readonly onToolResult?:
     | ((call: ToolCall, result: ToolResult, iteration: number, durationMs: number) => void)
@@ -33,7 +48,7 @@ export interface AgentResult {
   readonly usage: TokenUsage;
   /** 实际执行的工具调用总数（不是轮次） */
   readonly toolCalls: number;
-  readonly stopReason: 'answer' | 'max_iterations';
+  readonly stopReason: AgentStopReason;
 }
 
 export async function runAgentLoop(task: string, options: AgentLoopOptions): Promise<AgentResult> {
@@ -44,6 +59,11 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
   let usage = EMPTY_USAGE;
   let toolCallCount = 0;
   let lastContent = '';
+  let lastToolSignature: string | undefined;
+  let repeatedCount = 0;
+  let consecutiveFailureIterations = 0;
+  const maxRepeatedCalls = options.maxRepeatedCalls ?? DEFAULT_MAX_REPEATED_CALLS;
+  const maxConsecutiveFailures = options.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
 
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
     throwIfAborted(options.signal);
@@ -71,7 +91,7 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
         iterations: iteration,
         usage,
         toolCalls: toolCallCount,
-        stopReason: 'answer',
+        stopReason: classifyFinalAnswer(response),
       };
     }
 
@@ -81,8 +101,30 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
       toolCalls: response.toolCalls,
     });
 
+    const iterationResults: ToolResult[] = [];
     for (const call of response.toolCalls) {
       throwIfAborted(options.signal);
+      const signature = `${call.name}\n${call.arguments}`;
+      if (signature === lastToolSignature) {
+        repeatedCount += 1;
+      } else {
+        lastToolSignature = signature;
+        repeatedCount = 1;
+      }
+      if (repeatedCount >= maxRepeatedCalls) {
+        options.logger?.warn(
+          { iteration, tool: call.name, repeated: repeatedCount },
+          'repeated tool call detected',
+        );
+        return {
+          content: lastContent,
+          iterations: iteration,
+          usage,
+          toolCalls: toolCallCount,
+          stopReason: 'repeated_tool_call',
+        };
+      }
+
       options.onToolCall?.(call, iteration);
       // 顺序执行：多工具并发会引入写入顺序与资源竞争问题
       const startedAt = Date.now();
@@ -93,6 +135,7 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
       });
       const durationMs = Date.now() - startedAt;
       toolCallCount += 1;
+      iterationResults.push(result);
       messages.push({ role: 'tool', toolCallId: call.id, content: result.content });
       options.logger?.info(
         {
@@ -106,6 +149,25 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
       );
       options.onToolResult?.(call, result, iteration, durationMs);
     }
+
+    if (iterationResults.every((result) => !result.ok)) {
+      consecutiveFailureIterations += 1;
+    } else {
+      consecutiveFailureIterations = 0;
+    }
+    if (consecutiveFailureIterations >= maxConsecutiveFailures) {
+      options.logger?.warn(
+        { iteration, consecutiveFailures: consecutiveFailureIterations },
+        'consecutive tool failures detected',
+      );
+      return {
+        content: lastContent,
+        iterations: iteration,
+        usage,
+        toolCalls: toolCallCount,
+        stopReason: 'tool_failure_limit',
+      };
+    }
   }
 
   return {
@@ -115,4 +177,14 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
     toolCalls: toolCallCount,
     stopReason: 'max_iterations',
   };
+}
+
+function classifyFinalAnswer(response: ChatResponse): AgentStopReason {
+  if (response.content.trim() === '') {
+    return 'empty_answer';
+  }
+  if (response.finishReason === 'length') {
+    return 'output_truncated';
+  }
+  return 'answer';
 }

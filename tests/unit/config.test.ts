@@ -27,6 +27,8 @@ describe('默认值', () => {
     expect(config.llm.timeoutMs).toBe(60_000);
     expect(config.llm.maxRetries).toBe(2);
     expect(config.agent.maxIterations).toBe(20);
+    expect(config.agent.maxRepeatedCalls).toBe(3);
+    expect(config.agent.maxConsecutiveFailures).toBe(3);
     expect(config.agent.confirmHighRisk).toBe(true);
     expect(config.log.level).toBe('info');
     expect(config.log.pretty).toBe(true);
@@ -87,6 +89,18 @@ describe('校验失败', () => {
     expect(() => load({ AGENT_MAX_ITERATIONS: 'abc' })).toThrow(/AGENT_MAX_ITERATIONS/);
   });
 
+  it('熔断阈值越界或非数字报错', () => {
+    expect(() => load({ AGENT_MAX_REPEATED_CALLS: '1' })).toThrow(/AGENT_MAX_REPEATED_CALLS/);
+    expect(() => load({ AGENT_MAX_REPEATED_CALLS: '101' })).toThrow(/AGENT_MAX_REPEATED_CALLS/);
+    expect(() => load({ AGENT_MAX_REPEATED_CALLS: 'abc' })).toThrow(/AGENT_MAX_REPEATED_CALLS/);
+    expect(() => load({ AGENT_MAX_CONSECUTIVE_FAILURES: '0' })).toThrow(
+      /AGENT_MAX_CONSECUTIVE_FAILURES/,
+    );
+    expect(() => load({ AGENT_MAX_CONSECUTIVE_FAILURES: '101' })).toThrow(
+      /AGENT_MAX_CONSECUTIVE_FAILURES/,
+    );
+  });
+
   it('非法布尔值报错', () => {
     expect(() => load({ AGENT_CONFIRM_HIGH_RISK: 'yes' })).toThrow(/AGENT_CONFIRM_HIGH_RISK/);
   });
@@ -113,6 +127,8 @@ describe('取值解析', () => {
 
   it('数字字符串被强制转换', () => {
     expect(load({ LLM_TIMEOUT_MS: '1500' }).llm.timeoutMs).toBe(1500);
+    expect(load({ AGENT_MAX_REPEATED_CALLS: '5' }).agent.maxRepeatedCalls).toBe(5);
+    expect(load({ AGENT_MAX_CONSECUTIVE_FAILURES: '1' }).agent.maxConsecutiveFailures).toBe(1);
   });
 
   it('空白字符串视为未设置', () => {

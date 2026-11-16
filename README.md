@@ -2,9 +2,9 @@
 
 从零实现的 TypeScript Single Coding Agent。目标是理解 Agent 的架构与实现原理，因此核心循环手写，不使用 LangChain 等编排框架。
 
-当前处于**阶段 3：工具调用**。`run` 已是真正的任务入口：模型自主决定调用 `read_file` /
-`list_files` / `search_code`，Agent 循环执行工具并回填结果，直到给出最终回答。所有工具只读、
-受 workspace 沙箱与敏感文件规则约束；`chat` REPL 仍只对话、不接工具。
+当前处于**阶段 4：Agent Core 加固**。`run` 能自主完成多步任务：模型决策 → 调用工具 → 观察结果 →
+继续决策，直到给出非空答案。循环具备迭代上限、重复调用熔断、连续失败熔断与明确的停止原因；
+所有工具只读、受 workspace 沙箱与敏感文件规则约束；`chat` REPL 仍只对话、不接工具。
 
 ## 环境要求
 
@@ -81,7 +81,17 @@ answer:
 tokens: prompt=... completion=... total=...  iterations=2  tools=1
 ```
 
-无任务时退出码 2；迭代上限耗尽时打印明确错误并退出 1；`Ctrl+C` 中止当前运行。
+无任务时退出码 2。任务未正常结束时退出码 1，并给出停止原因：
+
+| 停止原因             | 含义                                     |
+| -------------------- | ---------------------------------------- |
+| `empty_answer`       | 模型没有调用工具但答案为空               |
+| `output_truncated`   | 模型输出被截断（`finish_reason=length`） |
+| `repeated_tool_call` | 同一工具+参数连续出现达到阈值            |
+| `tool_failure_limit` | 连续多轮工具调用全部失败                 |
+| `max_iterations`     | 迭代预算耗尽（`AGENT_MAX_ITERATIONS`）   |
+
+`Ctrl+C` 中止当前运行。
 
 REPL 内置命令：`/exit`、`/quit` 退出；`/clear` 清空历史（保留 system）；`/help` 查看帮助。
 空行忽略，未知斜杠命令按普通消息发送。`Ctrl+C` 在有请求在飞时只中止本轮，空闲时退出。
@@ -93,21 +103,23 @@ REPL 内置命令：`/exit`、`/quit` 退出；`/clear` 清空历史（保留 sy
 
 全部配置来自环境变量，优先级为 **进程环境变量 > `.env` 文件 > 默认值**，由 zod 校验后冻结为只读对象。
 
-| 变量                      | 默认值        | 说明                                            |
-| ------------------------- | ------------- | ----------------------------------------------- |
-| `LLM_PROVIDER`            | `mock`        | `mock` 或 `openai-compatible`                   |
-| `LLM_API_KEY`             | 空            | provider 非 mock 时必填                         |
-| `LLM_BASE_URL`            | 空            | provider 为 openai-compatible 时必填            |
-| `LLM_MODEL`               | 空            | provider 非 mock 时必填                         |
-| `LLM_TIMEOUT_MS`          | `60000`       | 1–600000                                        |
-| `LLM_MAX_RETRIES`         | `2`           | 0–10                                            |
-| `AGENT_WORKSPACE`         | `.`           | 沙箱根，解析为绝对路径                          |
-| `AGENT_MAX_ITERATIONS`    | `20`          | 1–200                                           |
-| `AGENT_CONFIRM_HIGH_RISK` | `true`        | 接受 true/false/1/0                             |
-| `AGENT_LOG_LEVEL`         | `info`        | trace/debug/info/warn/error/fatal/silent        |
-| `AGENT_LOG_DIR`           | `.agent/logs` | 相对路径基于 workspace，且必须位于 workspace 内 |
-| `AGENT_LOG_PRETTY`        | `true`        | 控制台美化输出；文件侧恒为 JSON                 |
-| `AGENT_MOCK_SCRIPT`       | 空            | 仅 mock provider：按步回放的工具调用脚本路径    |
+| 变量                             | 默认值        | 说明                                            |
+| -------------------------------- | ------------- | ----------------------------------------------- |
+| `LLM_PROVIDER`                   | `mock`        | `mock` 或 `openai-compatible`                   |
+| `LLM_API_KEY`                    | 空            | provider 非 mock 时必填                         |
+| `LLM_BASE_URL`                   | 空            | provider 为 openai-compatible 时必填            |
+| `LLM_MODEL`                      | 空            | provider 非 mock 时必填                         |
+| `LLM_TIMEOUT_MS`                 | `60000`       | 1–600000                                        |
+| `LLM_MAX_RETRIES`                | `2`           | 0–10                                            |
+| `AGENT_WORKSPACE`                | `.`           | 沙箱根，解析为绝对路径                          |
+| `AGENT_MAX_ITERATIONS`           | `20`          | 1–200                                           |
+| `AGENT_MAX_REPEATED_CALLS`       | `3`           | 2–100，重复同一调用达到该次数即停止             |
+| `AGENT_MAX_CONSECUTIVE_FAILURES` | `3`           | 1–100，连续工具全失败达到该轮数即停止           |
+| `AGENT_CONFIRM_HIGH_RISK`        | `true`        | 接受 true/false/1/0                             |
+| `AGENT_LOG_LEVEL`                | `info`        | trace/debug/info/warn/error/fatal/silent        |
+| `AGENT_LOG_DIR`                  | `.agent/logs` | 相对路径基于 workspace，且必须位于 workspace 内 |
+| `AGENT_LOG_PRETTY`               | `true`        | 控制台美化输出；文件侧恒为 JSON                 |
+| `AGENT_MOCK_SCRIPT`              | 空            | 仅 mock provider：按步回放的工具调用脚本路径    |
 
 配置只做格式与必填校验，不在加载时测试模型连通性；连通性由 `chat` 实际发起请求时体现。
 
@@ -160,6 +172,7 @@ ZHIPU_LIVE_TEST=1 pnpm exec vitest run tests/integration/zhipu-live.test.ts
 - 参数由 zod 校验（同一份 schema 同时生成 JSON Schema 发给模型）；业务错误以
   `{"ok":false,"error":{"code":...,"message":...}}` 回传模型，让其自我纠正而不中断循环。
 - 工具串行执行，输出统一截断并提示，避免撑爆上下文。
+- 循环保护：连续重复同一调用、连续多轮工具全失败都会熔断，避免模型陷入无效循环。
 
 ### 离线脚本化（测试支撑）
 
@@ -207,7 +220,7 @@ src/
 ├─ config/         .env 加载 + zod 校验
 ├─ logger/         分级日志 + 脱敏
 ├─ shared/         错误、公共类型、package 信息
-├─ agent/          核心执行循环      （阶段 3 已落地最小闭环）
+├─ agent/          核心执行循环      （阶段 4：结束判定 + 熔断）
 ├─ llm/            模型通信          （阶段 2 已落地）
 │  ├─ types.ts       消息结构 + LLMProvider 契约（含工具协议）
 │  ├─ errors.ts      HTTP/网络错误分类与可重试判定
@@ -235,6 +248,7 @@ tests/
 - [docs/plans/phase-1-init.md](docs/plans/phase-1-init.md) —— 阶段 1 开发 Plan
 - [docs/plans/phase-2-llm.md](docs/plans/phase-2-llm.md) —— 阶段 2 开发 Plan 与验收结果
 - [docs/plans/phase-3-tools.md](docs/plans/phase-3-tools.md) —— 阶段 3 工具调用 Plan 与验收结果
+- [docs/plans/phase-4-agent-core.md](docs/plans/phase-4-agent-core.md) —— 阶段 4 Agent Core 加固 Plan 与验收结果
 - [AGENTS.md](AGENTS.md) —— 项目开发规范
 
 ## 安全约束（摘自 AGENTS.md）

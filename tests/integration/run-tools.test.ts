@@ -122,4 +122,61 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
     expect(run.stdout).toContain('TOOL_DENIED');
     expect(run.stdout).toContain('无法访问工作区外。');
   }, 60_000);
+
+  it('多步任务：列目录 → 搜索 → 读取后作答', () => {
+    writeFileSync(path.join(workspace, 'app.ts'), 'const greeting = "hello";\n');
+    useScript([
+      { toolCalls: [{ name: 'list_files', arguments: '{"path":".","recursive":false}' }] },
+      { toolCalls: [{ name: 'search_code', arguments: '{"pattern":"greeting","path":"."}' }] },
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"app.ts"}' }] },
+      { content: 'app.ts 第 1 行定义了 greeting。' },
+    ]);
+
+    const run = runCli(['run', '找出 greeting 的定义'], { AGENT_MOCK_SCRIPT: 'script.json' });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('[1] → list_files');
+    expect(run.stdout).toContain('[2] → search_code');
+    expect(run.stdout).toContain('[3] → read_file {"path":"app.ts"}');
+    expect(run.stdout).toContain('app.ts 第 1 行定义了 greeting。');
+    expect(run.stdout).toContain('iterations=4  tools=3');
+  }, 60_000);
+
+  it('重复同一工具调用时熔断并退出 1', () => {
+    const repeated = { toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] };
+    useScript([repeated, repeated, repeated]);
+
+    const run = runCli(['run', '重复读取'], { AGENT_MOCK_SCRIPT: 'script.json' });
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('repeated_tool_call');
+    expect(run.stdout).toContain('iterations=3  tools=2');
+  }, 60_000);
+
+  it('连续工具失败达到阈值时退出 1', () => {
+    useScript([
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"missing-1.txt"}' }] },
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"missing-2.txt"}' }] },
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"missing-3.txt"}' }] },
+    ]);
+
+    const run = runCli(['run', '反复读取不存在的文件'], {
+      AGENT_MOCK_SCRIPT: 'script.json',
+      AGENT_MAX_CONSECUTIVE_FAILURES: '2',
+    });
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('tool_failure_limit');
+    expect(run.stdout).toContain('iterations=2  tools=2');
+  }, 60_000);
+
+  it('空答案退出 1 且标记为未完成', () => {
+    useScript([{ content: '' }]);
+
+    const run = runCli(['run', '给出答案'], { AGENT_MOCK_SCRIPT: 'script.json' });
+
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('empty_answer');
+    expect(run.stdout).toContain('iterations=1  tools=0');
+  }, 60_000);
 });
