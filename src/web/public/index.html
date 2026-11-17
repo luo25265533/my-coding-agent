@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>my-coding-agent</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>my-coding-agent</h1>
+      <div class="header-right">
+        <span id="status-badge" class="badge status-idle">idle</span>
+        <span id="dropped" class="dropped hidden"></span>
+        <button id="token-btn" type="button" class="ghost">Token</button>
+      </div>
+    </header>
+
+    <div id="token-bar" class="token-bar hidden">
+      <label for="token-input">访问 Token（serve 启动时打印）</label>
+      <input id="token-input" type="password" autocomplete="off" placeholder="粘贴 token" />
+      <button id="token-save" type="button">保存并连接</button>
+      <span id="token-error" class="error-text"></span>
+    </div>
+
+    <main id="app">
+      <aside class="sidebar">
+        <h2>
+          任务历史
+          <button id="refresh-tasks" type="button" class="ghost">刷新</button>
+        </h2>
+        <div id="task-list" class="task-list">（空）</div>
+      </aside>
+
+      <section class="chat-main">
+        <div id="chat" class="chat" aria-live="polite"></div>
+
+        <div class="composer">
+          <form id="run-form">
+            <div class="composer-row">
+              <textarea
+                id="task-input"
+                rows="2"
+                maxlength="4000"
+                placeholder="描述开发需求，例如：修复 tests 中失败的用例"
+              ></textarea>
+              <div class="composer-buttons">
+                <button id="run-btn" type="submit">发送</button>
+                <button id="abort-btn" type="button" class="danger hidden">中止</button>
+              </div>
+            </div>
+            <details class="composer-options">
+              <summary>选项</summary>
+              <div class="form-row">
+                <label><input type="checkbox" id="opt-yes" /> 自动批准 Plan（yes）</label>
+                <label><input type="checkbox" id="opt-noverify" /> 跳过验证（noVerify）</label>
+                <input id="opt-verify" type="text" placeholder="自定义验证命令（可选）" />
+              </div>
+            </details>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

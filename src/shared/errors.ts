@@ -21,6 +21,11 @@ export const ErrorCode = {
   PathDenied: 'PATH_DENIED',
   AgentMaxIterations: 'AGENT_MAX_ITERATIONS',
   AgentIncomplete: 'AGENT_INCOMPLETE',
+  PlannerInvalid: 'PLANNER_INVALID',
+  TaskNotFound: 'TASK_NOT_FOUND',
+  TaskInvalid: 'TASK_INVALID',
+  TaskStorage: 'TASK_STORAGE',
+  VerificationFailed: 'VERIFICATION_FAILED',
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -40,6 +45,11 @@ const EXIT_CODE_BY_ERROR_CODE: Record<ErrorCode, ExitCode> = {
   [ErrorCode.PathDenied]: ExitCode.RuntimeError,
   [ErrorCode.AgentMaxIterations]: ExitCode.RuntimeError,
   [ErrorCode.AgentIncomplete]: ExitCode.RuntimeError,
+  [ErrorCode.PlannerInvalid]: ExitCode.RuntimeError,
+  [ErrorCode.TaskNotFound]: ExitCode.UsageError,
+  [ErrorCode.TaskInvalid]: ExitCode.UsageError,
+  [ErrorCode.TaskStorage]: ExitCode.RuntimeError,
+  [ErrorCode.VerificationFailed]: ExitCode.RuntimeError,
 };
 
 export class AgentError extends Error {

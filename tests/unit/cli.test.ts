@@ -38,6 +38,24 @@ describe('buildProgram', () => {
     expect(program.name()).toBe('agent');
     expect(program.commands.map((command) => command.name())).toContain('run');
   });
+
+  it('注册 tasks、tasks list 与 tasks show 子命令', () => {
+    const program = buildProgram();
+    const tasks = program.commands.find((command) => command.name() === 'tasks');
+    expect(tasks).toBeDefined();
+    expect(tasks?.commands.map((command) => command.name())).toEqual(
+      expect.arrayContaining(['list', 'show']),
+    );
+  });
+
+  it('run 帮助包含 --resume、--verify、--no-verify', () => {
+    const program = buildProgram();
+    const run = program.commands.find((command) => command.name() === 'run');
+    const help = run?.helpInformation() ?? '';
+    expect(help).toContain('--resume <taskId>');
+    expect(help).toContain('--verify <command>');
+    expect(help).toContain('--no-verify');
+  });
 });
 
 describe('版本与帮助', () => {
@@ -102,6 +120,43 @@ describe('run 参数解析', () => {
   it('不带 task 时传入空数组', async () => {
     await capture(() => main(['run']));
     expect(runCommand).toHaveBeenCalledWith([], expect.anything());
+  });
+
+  it('--resume 与 --verify 正确传递', async () => {
+    await capture(() =>
+      main(['run', '--resume', 'task-id', '--verify', 'pnpm run check', '--yes']),
+    );
+    expect(runCommand).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({
+        resume: 'task-id',
+        verify: 'pnpm run check',
+        noVerify: false,
+        yes: true,
+      }),
+    );
+  });
+
+  it('--no-verify 映射为 noVerify 且不传 verify 命令', async () => {
+    await capture(() => main(['run', 'task', '--no-verify']));
+    expect(runCommand).toHaveBeenCalledWith(
+      ['task'],
+      expect.objectContaining({ verify: undefined, noVerify: true }),
+    );
+  });
+
+  it('未提供验证参数时 verify 与 noVerify 都不覆盖', async () => {
+    await capture(() => main(['run', 'task']));
+    expect(runCommand).toHaveBeenCalledWith(
+      ['task'],
+      expect.objectContaining({ verify: undefined, noVerify: false }),
+    );
+  });
+
+  it('tasks --limit 非法时退出 2 且不执行命令', async () => {
+    const { result, stderr } = await capture(() => main(['tasks', '--limit', '0']));
+    expect(result).toBe(ExitCode.UsageError);
+    expect(stderr).toContain('--limit');
   });
 
   it('合法 log level 全部可解析', async () => {

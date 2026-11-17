@@ -29,7 +29,21 @@ describe('默认值', () => {
     expect(config.agent.maxIterations).toBe(20);
     expect(config.agent.maxRepeatedCalls).toBe(3);
     expect(config.agent.maxConsecutiveFailures).toBe(3);
+    expect(config.agent.contextBudgetTokens).toBe(16_000);
+    expect(config.agent.respectGitignore).toBe(true);
+    expect(config.agent.ignorePatterns).toEqual([]);
     expect(config.agent.confirmHighRisk).toBe(true);
+    expect(config.agent.confirmTimeoutMs).toBe(300_000);
+    expect(config.agent.planMaxSteps).toBe(12);
+    expect(config.agent.stepMaxIterations).toBe(10);
+    expect(config.agent.commandTimeoutMs).toBe(30_000);
+    expect(config.agent.taskDb).toBe(path.join(cwd, '.agent', 'tasks.db'));
+    expect(config.agent.verifyCommand).toBe('pnpm test');
+    expect(config.agent.verifyCommandExplicit).toBe(false);
+    expect(config.agent.verifyTimeoutMs).toBe(300_000);
+    expect(config.agent.verifySkipStatic).toBe(true);
+    expect(config.agent.maxRepairAttempts).toBe(2);
+    expect(config.agent.repairMaxIterations).toBe(8);
     expect(config.log.level).toBe('info');
     expect(config.log.pretty).toBe(true);
   });
@@ -101,8 +115,59 @@ describe('校验失败', () => {
     );
   });
 
+  it('上下文预算越界或非数字报错', () => {
+    expect(() => load({ AGENT_CONTEXT_BUDGET_TOKENS: '999' })).toThrow(
+      /AGENT_CONTEXT_BUDGET_TOKENS/,
+    );
+    expect(() => load({ AGENT_CONTEXT_BUDGET_TOKENS: '200001' })).toThrow(
+      /AGENT_CONTEXT_BUDGET_TOKENS/,
+    );
+    expect(() => load({ AGENT_CONTEXT_BUDGET_TOKENS: 'many' })).toThrow(
+      /AGENT_CONTEXT_BUDGET_TOKENS/,
+    );
+    expect(() => load({ AGENT_RESPECT_GITIGNORE: 'maybe' })).toThrow(/AGENT_RESPECT_GITIGNORE/);
+  });
+
   it('非法布尔值报错', () => {
     expect(() => load({ AGENT_CONFIRM_HIGH_RISK: 'yes' })).toThrow(/AGENT_CONFIRM_HIGH_RISK/);
+  });
+
+  it('验证与修复配置越界或非数字报错', () => {
+    expect(() => load({ AGENT_VERIFY_TIMEOUT_MS: '999' })).toThrow(/AGENT_VERIFY_TIMEOUT_MS/);
+    expect(() => load({ AGENT_VERIFY_TIMEOUT_MS: '600001' })).toThrow(/AGENT_VERIFY_TIMEOUT_MS/);
+    expect(() => load({ AGENT_VERIFY_TIMEOUT_MS: 'slow' })).toThrow(/AGENT_VERIFY_TIMEOUT_MS/);
+    expect(() => load({ AGENT_CONFIRM_TIMEOUT_MS: '999' })).toThrow(/AGENT_CONFIRM_TIMEOUT_MS/);
+    expect(() => load({ AGENT_CONFIRM_TIMEOUT_MS: '3600001' })).toThrow(/AGENT_CONFIRM_TIMEOUT_MS/);
+    expect(() => load({ AGENT_CONFIRM_TIMEOUT_MS: 'soon' })).toThrow(/AGENT_CONFIRM_TIMEOUT_MS/);
+    expect(() => load({ AGENT_MAX_REPAIR_ATTEMPTS: '-1' })).toThrow(/AGENT_MAX_REPAIR_ATTEMPTS/);
+    expect(() => load({ AGENT_MAX_REPAIR_ATTEMPTS: '11' })).toThrow(/AGENT_MAX_REPAIR_ATTEMPTS/);
+    expect(() => load({ AGENT_REPAIR_MAX_ITERATIONS: '0' })).toThrow(/AGENT_REPAIR_MAX_ITERATIONS/);
+    expect(() => load({ AGENT_REPAIR_MAX_ITERATIONS: '101' })).toThrow(
+      /AGENT_REPAIR_MAX_ITERATIONS/,
+    );
+  });
+
+  it('AGENT_VERIFY_COMMAND 超长或含 NUL 报错', () => {
+    expect(() => load({ AGENT_VERIFY_COMMAND: 'x'.repeat(1001) })).toThrow(/AGENT_VERIFY_COMMAND/);
+    expect(() => load({ AGENT_VERIFY_COMMAND: 'pnpm test\u0000' })).toThrow(/AGENT_VERIFY_COMMAND/);
+  });
+
+  it('AGENT_TASK_DB 越界、.git 与敏感文件名被拒', () => {
+    expect(() => load({ AGENT_TASK_DB: '../outside.db' })).toThrow(ConfigError);
+    expect(() => load({ AGENT_TASK_DB: '../outside.db' })).toThrow(/AGENT_TASK_DB/);
+    expect(() => load({ AGENT_TASK_DB: '.git/tasks.db' })).toThrow(/AGENT_TASK_DB/);
+    expect(() => load({ AGENT_TASK_DB: '.env' })).toThrow(/sensitive/);
+  });
+
+  it('规划与命令超时配置越界报错', () => {
+    expect(() => load({ AGENT_PLAN_MAX_STEPS: '0' })).toThrow(/AGENT_PLAN_MAX_STEPS/);
+    expect(() => load({ AGENT_PLAN_MAX_STEPS: '51' })).toThrow(/AGENT_PLAN_MAX_STEPS/);
+    expect(() => load({ AGENT_PLAN_MAX_STEPS: 'abc' })).toThrow(/AGENT_PLAN_MAX_STEPS/);
+    expect(() => load({ AGENT_STEP_MAX_ITERATIONS: '0' })).toThrow(/AGENT_STEP_MAX_ITERATIONS/);
+    expect(() => load({ AGENT_STEP_MAX_ITERATIONS: '101' })).toThrow(/AGENT_STEP_MAX_ITERATIONS/);
+    expect(() => load({ AGENT_COMMAND_TIMEOUT_MS: '999' })).toThrow(/AGENT_COMMAND_TIMEOUT_MS/);
+    expect(() => load({ AGENT_COMMAND_TIMEOUT_MS: '600001' })).toThrow(/AGENT_COMMAND_TIMEOUT_MS/);
+    expect(() => load({ AGENT_COMMAND_TIMEOUT_MS: 'slow' })).toThrow(/AGENT_COMMAND_TIMEOUT_MS/);
   });
 });
 
@@ -129,6 +194,58 @@ describe('取值解析', () => {
     expect(load({ LLM_TIMEOUT_MS: '1500' }).llm.timeoutMs).toBe(1500);
     expect(load({ AGENT_MAX_REPEATED_CALLS: '5' }).agent.maxRepeatedCalls).toBe(5);
     expect(load({ AGENT_MAX_CONSECUTIVE_FAILURES: '1' }).agent.maxConsecutiveFailures).toBe(1);
+    expect(load({ AGENT_CONTEXT_BUDGET_TOKENS: '8000' }).agent.contextBudgetTokens).toBe(8000);
+    expect(load({ AGENT_PLAN_MAX_STEPS: '6' }).agent.planMaxSteps).toBe(6);
+    expect(load({ AGENT_STEP_MAX_ITERATIONS: '4' }).agent.stepMaxIterations).toBe(4);
+    expect(load({ AGENT_COMMAND_TIMEOUT_MS: '1500' }).agent.commandTimeoutMs).toBe(1500);
+  });
+
+  it('AGENT_IGNORE 按逗号与换行拆分并裁剪空白', () => {
+    expect(load({ AGENT_IGNORE: ' tmp/ , *.log\nbuild/ , ' }).agent.ignorePatterns).toEqual([
+      'tmp/',
+      '*.log',
+      'build/',
+    ]);
+  });
+
+  it('阶段 7 数值配置被强制转换并接受边界值', () => {
+    const config = load({
+      AGENT_VERIFY_TIMEOUT_MS: '1500',
+      AGENT_CONFIRM_TIMEOUT_MS: '60000',
+      AGENT_VERIFY_SKIP_STATIC: '0',
+      AGENT_MAX_REPAIR_ATTEMPTS: '0',
+      AGENT_REPAIR_MAX_ITERATIONS: '1',
+      AGENT_TASK_DB: 'state/tasks.db',
+    });
+    expect(config.agent.verifyTimeoutMs).toBe(1500);
+    expect(config.agent.confirmTimeoutMs).toBe(60_000);
+    expect(config.agent.verifySkipStatic).toBe(false);
+    expect(config.agent.maxRepairAttempts).toBe(0);
+    expect(config.agent.repairMaxIterations).toBe(1);
+    expect(config.agent.taskDb).toBe(path.join(cwd, 'state', 'tasks.db'));
+  });
+
+  it('AGENT_VERIFY_COMMAND 显式提供时标记 explicit（含空值）', () => {
+    expect(load({ AGENT_VERIFY_COMMAND: 'pnpm run check' }).agent).toMatchObject({
+      verifyCommand: 'pnpm run check',
+      verifyCommandExplicit: true,
+    });
+    expect(load({ AGENT_VERIFY_COMMAND: '  ' }).agent).toMatchObject({
+      verifyCommand: undefined,
+      verifyCommandExplicit: true,
+    });
+  });
+
+  it('.env 中的 AGENT_VERIFY_COMMAND 也标记 explicit', () => {
+    writeFileSync(path.join(cwd, '.env'), 'AGENT_VERIFY_COMMAND=pnpm test\n', 'utf8');
+    const config = loadConfig({ cwd, env: {} });
+    expect(config.agent.verifyCommand).toBe('pnpm test');
+    expect(config.agent.verifyCommandExplicit).toBe(true);
+  });
+
+  it('AGENT_RESPECT_GITIGNORE 解析布尔值', () => {
+    expect(load({ AGENT_RESPECT_GITIGNORE: '0' }).agent.respectGitignore).toBe(false);
+    expect(load({ AGENT_RESPECT_GITIGNORE: 'true' }).agent.respectGitignore).toBe(true);
   });
 
   it('空白字符串视为未设置', () => {

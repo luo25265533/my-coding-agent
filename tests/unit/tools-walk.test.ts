@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createIgnoreMatcher } from '../../src/security/ignore.js';
 import { ErrorCode } from '../../src/shared/errors.js';
 import {
   looksBinary,
@@ -9,7 +10,7 @@ import {
   walkEntries,
   type WalkEntry,
   type WalkOptions,
-} from '../../src/tools/walk.js';
+} from '../../src/security/walk.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'agent-walk-'));
 
@@ -89,6 +90,44 @@ describe('walkEntries', () => {
     }
     const entries = await collect();
     expect(entries.some((entry) => entry.relativePath === 'dir/link.txt')).toBe(false);
+  });
+
+  it('传入 IgnoreMatcher 时额外规则生效', async () => {
+    const ignore = createIgnoreMatcher({
+      workspace: root,
+      respectGitignore: false,
+      extraPatterns: ['dir/nested/'],
+    });
+    const entries = await collect({ ignore });
+    expect(entries.some((entry) => entry.relativePath === 'dir/nested/b.txt')).toBe(false);
+    expect(entries.some((entry) => entry.relativePath === 'dir/a.txt')).toBe(true);
+  });
+
+  it('读取根 .gitignore', async () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'agent-walk-gitignore-'));
+    try {
+      writeFileSync(path.join(workspace, '.gitignore'), 'skip.txt\nskipped/\n');
+      writeFileSync(path.join(workspace, 'skip.txt'), 'skip');
+      writeFileSync(path.join(workspace, 'keep.txt'), 'keep');
+      mkdirSync(path.join(workspace, 'skipped'));
+      writeFileSync(path.join(workspace, 'skipped', 'inner.txt'), 'inner');
+
+      const entries: WalkEntry[] = [];
+      for await (const entry of walkEntries({
+        workspace,
+        start: workspace,
+        maxDepth: 5,
+        ignore: createIgnoreMatcher({ workspace }),
+      })) {
+        entries.push(entry);
+      }
+
+      expect(entries.some((entry) => entry.relativePath === 'skip.txt')).toBe(false);
+      expect(entries.some((entry) => entry.relativePath === 'skipped/inner.txt')).toBe(false);
+      expect(entries.some((entry) => entry.relativePath === 'keep.txt')).toBe(true);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('已中止的信号抛 LlmAborted', async () => {

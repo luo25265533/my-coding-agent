@@ -4,7 +4,7 @@ import { assertNotSensitive, resolveInsideWorkspace } from '../../security/path-
 import { throwIfAborted } from '../../shared/abort.js';
 import { errorResult, okResult } from '../result.js';
 import type { ToolDefinition } from '../types.js';
-import { walkEntries, type WalkEntry } from '../walk.js';
+import { walkEntries, type WalkEntry } from '../../security/walk.js';
 
 export const listFilesParameters = z.object({
   path: z.string().min(1).default('.').describe('Directory to list, relative to the workspace'),
@@ -60,6 +60,7 @@ export const listFilesTool: ToolDefinition<ListFilesParams> = {
       start: absoluteStart,
       maxDepth,
       includeDirs: true,
+      ignore: ctx.ignore,
       signal: ctx.signal,
     })) {
       if (entries.length >= params.maxEntries) {

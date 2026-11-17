@@ -1,11 +1,12 @@
 import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { assertNotSensitive, resolveInsideWorkspace } from '../../security/path-guard.js';
+import { looksBinary, walkEntries } from '../../security/walk.js';
 import { throwIfAborted } from '../../shared/abort.js';
 import { describeError } from '../../shared/errors.js';
+import { compileGlob } from '../glob.js';
 import { errorResult, okResult } from '../result.js';
 import type { ToolDefinition } from '../types.js';
-import { looksBinary, walkEntries } from '../walk.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_DEPTH = 20;
@@ -33,6 +34,14 @@ export const searchCodeParameters = z.object({
     .optional()
     .default(50)
     .describe('Maximum matches to return'),
+  contextLines: z
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .optional()
+    .default(0)
+    .describe('Lines of context before and after each match'),
 });
 
 export type SearchCodeParams = z.infer<typeof searchCodeParameters>;
@@ -40,7 +49,7 @@ export type SearchCodeParams = z.infer<typeof searchCodeParameters>;
 export const searchCodeTool: ToolDefinition<SearchCodeParams> = {
   name: 'search_code',
   description:
-    'Search workspace files line by line with a regular expression. Skips secret files, binary files and files larger than 1 MB. Returns "path:line: text".',
+    'Search workspace files line by line with a regular expression. Skips secret files, binary files and files larger than 1 MB. Returns "path:line: text"; context rows (contextLines > 0) use "path-line- text".',
   parameters: searchCodeParameters,
   riskLevel: 'low',
   async execute(params, ctx) {
@@ -65,6 +74,7 @@ export const searchCodeTool: ToolDefinition<SearchCodeParams> = {
 
     const matcher = params.glob === undefined ? undefined : compileGlob(params.glob);
     const matches: string[] = [];
+    let matchCount = 0;
     let filesScanned = 0;
     let truncated = false;
 
@@ -72,6 +82,7 @@ export const searchCodeTool: ToolDefinition<SearchCodeParams> = {
       workspace: ctx.workspace,
       start: absoluteStart,
       maxDepth: MAX_DEPTH,
+      ignore: ctx.ignore,
       signal: ctx.signal,
     })) {
       if (entry.type !== 'file' || entry.size > MAX_FILE_BYTES) {
@@ -89,19 +100,44 @@ export const searchCodeTool: ToolDefinition<SearchCodeParams> = {
       filesScanned += 1;
 
       const lines = buffer.toString('utf8').split(/\r?\n/);
+      let lastEmittedLine = 0;
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
         if (line === undefined || !regex.test(line)) {
           continue;
         }
-        if (matches.length >= params.maxResults) {
+        if (matchCount >= params.maxResults) {
           truncated = true;
           break scan;
         }
-        const text = line.trim();
-        matches.push(
-          `${entry.relativePath}:${index + 1}: ${text.length > MAX_LINE_LENGTH ? `${text.slice(0, MAX_LINE_LENGTH)}…` : text}`,
-        );
+        matchCount += 1;
+
+        const matchLine = index + 1;
+        if (params.contextLines === 0) {
+          matches.push(formatLine(entry.relativePath, matchLine, 'match', line));
+          continue;
+        }
+
+        const start = Math.max(1, matchLine - params.contextLines);
+        const end = Math.min(lines.length, matchLine + params.contextLines);
+        for (let lineNumber = start; lineNumber <= end; lineNumber += 1) {
+          if (lineNumber !== matchLine && lineNumber <= lastEmittedLine) {
+            continue;
+          }
+          const text = lines[lineNumber - 1];
+          if (text === undefined) {
+            continue;
+          }
+          matches.push(
+            formatLine(
+              entry.relativePath,
+              lineNumber,
+              lineNumber === matchLine ? 'match' : 'context',
+              text,
+            ),
+          );
+        }
+        lastEmittedLine = end;
       }
     }
 
@@ -113,42 +149,21 @@ export const searchCodeTool: ToolDefinition<SearchCodeParams> = {
     if (truncated) {
       return okResult(
         `${body}\n... (truncated at ${params.maxResults} matches; narrow the pattern or path)`,
-        { truncated: true, meta: { filesScanned, matches: matches.length } },
+        { truncated: true, meta: { filesScanned, matches: matchCount } },
       );
     }
-    return okResult(body, { meta: { filesScanned, matches: matches.length } });
+    return okResult(body, { meta: { filesScanned, matches: matchCount } });
   },
 };
 
-function compileGlob(glob: string): (relativePath: string) => boolean {
-  const normalized = glob.replace(/\\/g, '/');
-  let source = '';
-
-  for (let index = 0; index < normalized.length; index += 1) {
-    const char = normalized[index];
-    if (char === undefined) {
-      break;
-    }
-    if (char === '*') {
-      if (normalized[index + 1] === '*') {
-        index += 1;
-        if (normalized[index + 1] === '/') {
-          index += 1;
-          source += '(?:.*/)?';
-        } else {
-          source += '.*';
-        }
-      } else {
-        source += '[^/]*';
-      }
-    } else if (char === '?') {
-      source += '[^/]';
-    } else {
-      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-  }
-
-  const prefix = normalized.includes('/') ? '' : '(?:.*/)?';
-  const matcher = new RegExp(`^${prefix}${source}$`, 'i');
-  return (relativePath) => matcher.test(relativePath);
+function formatLine(
+  relativePath: string,
+  lineNumber: number,
+  kind: 'match' | 'context',
+  line: string,
+): string {
+  const text = line.trim();
+  const clipped = text.length > MAX_LINE_LENGTH ? `${text.slice(0, MAX_LINE_LENGTH)}…` : text;
+  const separator = kind === 'match' ? ':' : '-';
+  return `${relativePath}${separator}${lineNumber}${separator} ${clipped}`;
 }

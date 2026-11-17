@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDefaultToolRegistry, dispatchToolCall } from '../../src/tools/index.js';
+import { createIgnoreMatcher } from '../../src/security/ignore.js';
 import type { ToolContext, ToolResult } from '../../src/tools/types.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'agent-tools-'));
@@ -198,6 +199,79 @@ describe('search_code', () => {
 
   it('路径不存在', async () => {
     const result = await call('search_code', { pattern: 'x', path: 'nope' });
+    expect(result.ok).toBe(false);
+    expect(result.content).toContain('path not found');
+  });
+
+  it('contextLines 输出匹配行前后代码', async () => {
+    writeFileSync(path.join(root, 'src', 'lines.ts'), 'first\nTARGET\nthird\n');
+    const result = await call('search_code', {
+      pattern: 'TARGET',
+      glob: 'lines.ts',
+      contextLines: 1,
+    });
+    const lines = result.content.split('\n');
+    expect(lines).toContain('src/lines.ts-1- first');
+    expect(lines).toContain('src/lines.ts:2: TARGET');
+    expect(lines).toContain('src/lines.ts-3- third');
+  });
+});
+
+describe('find_files', () => {
+  it('按文件名 glob 查找并忽略依赖目录', async () => {
+    const result = await call('find_files', { glob: '*.ts' });
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('src/app.ts  (');
+    expect(result.content).not.toContain('node_modules');
+  });
+
+  it('含斜杠的 glob 从根锚定', async () => {
+    const result = await call('find_files', { glob: 'src/**/*.ts' });
+    expect(result.content).toContain('src/app.ts');
+  });
+
+  it('结尾 ** 匹配任意层级', async () => {
+    const result = await call('find_files', { glob: 'src/**' });
+    expect(result.content).toContain('src/app.ts');
+  });
+
+  it('起始路径为文件时直接匹配', async () => {
+    const result = await call('find_files', { glob: 'README.md', path: 'README.md' });
+    expect(result.content).toContain('README.md  (');
+  });
+
+  it('大小写不敏感', async () => {
+    const result = await call('find_files', { glob: 'README.MD' });
+    expect(result.content).toContain('README.md');
+  });
+
+  it('敏感文件不会被列出', async () => {
+    const result = await call('find_files', { glob: '.env' });
+    expect(result.content).toContain('no files match');
+  });
+
+  it('maxResults 截断', async () => {
+    const result = await call('find_files', { glob: '*', maxResults: 1 });
+    expect(result.truncated).toBe(true);
+    expect(result.content).toContain('truncated at 1 files');
+  });
+
+  it('ctx.ignore 生效', async () => {
+    const ignore = createIgnoreMatcher({
+      workspace: root,
+      respectGitignore: false,
+      extraPatterns: ['src/'],
+    });
+    const result = await dispatchToolCall(
+      registry,
+      { id: 'call_ignore', name: 'find_files', arguments: '{"glob":"*.ts"}' },
+      { ...ctx, ignore },
+    );
+    expect(result.content).toContain('no files match');
+  });
+
+  it('路径不存在', async () => {
+    const result = await call('find_files', { glob: '*', path: 'nope' });
     expect(result.ok).toBe(false);
     expect(result.content).toContain('path not found');
   });

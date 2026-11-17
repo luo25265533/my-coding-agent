@@ -63,7 +63,9 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
       { content: '文件内容是 hello from note。' },
     ]);
 
-    const run = runCli(['run', '读取 note.txt 并总结'], { AGENT_MOCK_SCRIPT: 'script.json' });
+    const run = runCli(['run', '--no-plan', '读取 note.txt 并总结'], {
+      AGENT_MOCK_SCRIPT: 'script.json',
+    });
 
     expect(run.status).toBe(0);
     expect(run.stderr).toBe('');
@@ -82,7 +84,7 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
   it('迭代上限耗尽退出 1 并输出错误', () => {
     useScript([{ toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] }]);
 
-    const run = runCli(['run', '无限循环'], {
+    const run = runCli(['run', '--no-plan', '无限循环'], {
       AGENT_MOCK_SCRIPT: 'script.json',
       AGENT_MAX_ITERATIONS: '1',
     });
@@ -100,7 +102,7 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
       { content: '访问被拒绝。' },
     ]);
 
-    const run = runCli(['run', '读取 .env'], { AGENT_MOCK_SCRIPT: 'script.json' });
+    const run = runCli(['run', '--no-plan', '读取 .env'], { AGENT_MOCK_SCRIPT: 'script.json' });
 
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('[1] ← error');
@@ -116,7 +118,7 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
       { content: '无法访问工作区外。' },
     ]);
 
-    const run = runCli(['run', '越权读取'], { AGENT_MOCK_SCRIPT: 'script.json' });
+    const run = runCli(['run', '--no-plan', '越权读取'], { AGENT_MOCK_SCRIPT: 'script.json' });
 
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('TOOL_DENIED');
@@ -132,7 +134,9 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
       { content: 'app.ts 第 1 行定义了 greeting。' },
     ]);
 
-    const run = runCli(['run', '找出 greeting 的定义'], { AGENT_MOCK_SCRIPT: 'script.json' });
+    const run = runCli(['run', '--no-plan', '找出 greeting 的定义'], {
+      AGENT_MOCK_SCRIPT: 'script.json',
+    });
 
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('[1] → list_files');
@@ -142,11 +146,50 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
     expect(run.stdout).toContain('iterations=4  tools=3');
   }, 60_000);
 
+  it('find_files 检索后读取文件作答，横幅展示上下文统计', () => {
+    writeFileSync(path.join(workspace, 'extra.txt'), 'extra file\n');
+    useScript([
+      { toolCalls: [{ name: 'find_files', arguments: '{"glob":"*.txt"}' }] },
+      { toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] },
+      { content: '文本文件有 note.txt 与 extra.txt。' },
+    ]);
+
+    const run = runCli(['run', '--no-plan', '找出所有文本文件'], {
+      AGENT_MOCK_SCRIPT: 'script.json',
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('context   : budget=16000 tokens  repo-map=');
+    expect(run.stdout).toContain('[1] → find_files {"glob":"*.txt"}');
+    expect(run.stdout).toContain('note.txt');
+    expect(run.stdout).toContain('[2] → read_file {"path":"note.txt"}');
+    expect(run.stdout).toContain('文本文件有 note.txt 与 extra.txt。');
+    expect(run.stdout).toContain('iterations=3  tools=2');
+
+    const log = logText();
+    expect(log).toContain('"msg":"context built"');
+    expect(log).toContain('"module":"context"');
+    expect(log).toContain('"msg":"run finished"');
+  }, 60_000);
+
+  it('预算不足时省略项目地图并在横幅标注 0 tokens', () => {
+    useScript([{ content: '完成。' }]);
+
+    const run = runCli(['run', '--no-plan', 'x'.repeat(6000)], {
+      AGENT_MOCK_SCRIPT: 'script.json',
+      AGENT_CONTEXT_BUDGET_TOKENS: '1000',
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('context   : budget=1000 tokens  repo-map=0 tokens  files=0');
+    expect(run.stdout).toContain('完成。');
+  }, 60_000);
+
   it('重复同一工具调用时熔断并退出 1', () => {
     const repeated = { toolCalls: [{ name: 'read_file', arguments: '{"path":"note.txt"}' }] };
     useScript([repeated, repeated, repeated]);
 
-    const run = runCli(['run', '重复读取'], { AGENT_MOCK_SCRIPT: 'script.json' });
+    const run = runCli(['run', '--no-plan', '重复读取'], { AGENT_MOCK_SCRIPT: 'script.json' });
 
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('repeated_tool_call');
@@ -160,7 +203,7 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
       { toolCalls: [{ name: 'read_file', arguments: '{"path":"missing-3.txt"}' }] },
     ]);
 
-    const run = runCli(['run', '反复读取不存在的文件'], {
+    const run = runCli(['run', '--no-plan', '反复读取不存在的文件'], {
       AGENT_MOCK_SCRIPT: 'script.json',
       AGENT_MAX_CONSECUTIVE_FAILURES: '2',
     });
@@ -173,7 +216,7 @@ describe('run 工具循环（离线 mock 脚本驱动）', () => {
   it('空答案退出 1 且标记为未完成', () => {
     useScript([{ content: '' }]);
 
-    const run = runCli(['run', '给出答案'], { AGENT_MOCK_SCRIPT: 'script.json' });
+    const run = runCli(['run', '--no-plan', '给出答案'], { AGENT_MOCK_SCRIPT: 'script.json' });
 
     expect(run.status).toBe(1);
     expect(run.stderr).toContain('empty_answer');

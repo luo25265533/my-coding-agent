@@ -32,10 +32,51 @@ export function resolveInsideWorkspace(workspace: string, input: string): string
   return target;
 }
 
+/**
+ * 写入路径解析：目标可能尚不存在，因此回溯到最近已存在的祖先做 realpath 校验，
+ * 防止通过 workspace 内的符号链接目录逃逸。`.git` 目录一律拒绝写入。
+ */
+export function resolveForWrite(workspace: string, input: string): string {
+  const root = path.resolve(workspace);
+  const target = path.resolve(root, input);
+  if (!isInsideWorkspace(root, target)) {
+    throw denied(`path escapes workspace: ${input}`);
+  }
+
+  const segments = path.relative(root, target).split(path.sep);
+  if (segments.some((segment) => segment.toLowerCase() === '.git')) {
+    throw denied(`refusing to write inside .git: ${input}`);
+  }
+
+  const realRoot = tryRealpath(root);
+  if (realRoot !== undefined) {
+    const realAncestor = realpathOfNearestAncestor(target);
+    if (realAncestor !== undefined && !isInsideWorkspace(realRoot, realAncestor)) {
+      throw denied(`path resolves outside workspace: ${input}`);
+    }
+  }
+  return target;
+}
+
 export function assertNotSensitive(filePath: string): void {
   const name = path.basename(filePath);
   if (isSensitiveFileName(name)) {
     throw denied(`refusing to access sensitive file: ${name}`);
+  }
+}
+
+function realpathOfNearestAncestor(target: string): string | undefined {
+  let current = target;
+  for (;;) {
+    const real = tryRealpath(current);
+    if (real !== undefined) {
+      return real;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
   }
 }
 

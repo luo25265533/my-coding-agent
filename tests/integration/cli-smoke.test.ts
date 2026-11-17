@@ -78,7 +78,7 @@ function readLogLines(): Record<string, unknown>[] {
 
 describe('源码入口（tsx 直跑）', () => {
   it('run 命令退出 0、回答任务并写出 JSONL 日志', () => {
-    const run = runCli(sourceCli, ['run', 'demo', 'task']);
+    const run = runCli(sourceCli, ['run', '--no-plan', 'demo', 'task']);
     expect(run.stderr).toBe('');
     expect(run.status).toBe(0);
     expect(run.stdout).not.toContain('phase 1 skeleton');
@@ -114,19 +114,23 @@ describe('源码入口（tsx 直跑）', () => {
   }, 60_000);
 
   it('非法 --log-level 退出 2', () => {
-    const run = runCli(sourceCli, ['run', '--log-level', 'nope']);
+    const run = runCli(sourceCli, ['run', '--no-plan', '--log-level', 'nope']);
     expect(run.status).toBe(2);
   }, 60_000);
 
   it('日志目录越界时退出 2 且不创建目录', () => {
-    const run = runCli(sourceCli, ['run', 'escape check'], { AGENT_LOG_DIR: '../escaped-logs' });
+    const run = runCli(sourceCli, ['run', '--no-plan', 'escape check'], {
+      AGENT_LOG_DIR: '../escaped-logs',
+    });
     expect(run.status).toBe(2);
     expect(run.stderr).toContain('must stay inside');
     expect(existsSync(path.join(workspace, 'logs'))).toBe(false);
   }, 60_000);
 
   it('pretty 模式下控制台为人类可读文本，文件侧仍是 JSONL', () => {
-    const run = runCli(sourceCli, ['run', 'pretty demo'], { AGENT_LOG_PRETTY: 'true' });
+    const run = runCli(sourceCli, ['run', '--no-plan', 'pretty demo'], {
+      AGENT_LOG_PRETTY: 'true',
+    });
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('INFO');
     expect(run.stdout).toContain('run started');
@@ -139,7 +143,7 @@ describe('源码入口（tsx 直跑）', () => {
 
   it('真实密钥不出现在 stdout、stderr 与日志文件中', () => {
     const secret = 'sk-smoke-top-secret';
-    const run = runCli(sourceCli, ['run', 'secret check'], {
+    const run = runCli(sourceCli, ['run', '--no-plan', 'secret check'], {
       LLM_PROVIDER: 'openai-compatible',
       LLM_API_KEY: secret,
       LLM_BASE_URL: 'http://127.0.0.1:1/v1',
@@ -165,7 +169,7 @@ describe('构建产物入口（node dist）', () => {
   }, 60_000);
 
   it('run 命令退出 0 并写出日志', () => {
-    const run = runCli(distCli, ['run', 'dist demo']);
+    const run = runCli(distCli, ['run', '--no-plan', 'dist demo']);
     expect(run.stderr).toBe('');
     expect(run.status).toBe(0);
     expect(run.stdout).toContain('echo: dist demo');
@@ -173,7 +177,7 @@ describe('构建产物入口（node dist）', () => {
   }, 60_000);
 
   it('配置错误退出 2', () => {
-    const run = runCli(distCli, ['run', 'config check'], {
+    const run = runCli(distCli, ['run', '--no-plan', 'config check'], {
       LLM_PROVIDER: 'openai-compatible',
       LLM_API_KEY: '',
     });

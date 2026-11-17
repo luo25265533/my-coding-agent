@@ -1,3 +1,8 @@
+import type { TokenUsage } from '../shared/token-usage.js';
+
+export type { TokenUsage };
+export { addUsage, EMPTY_USAGE } from '../shared/token-usage.js';
+
 export type Role = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface ToolCall {
@@ -33,14 +38,6 @@ export interface ChatRequest {
   readonly signal?: AbortSignal | undefined;
 }
 
-export interface TokenUsage {
-  readonly promptTokens: number;
-  readonly completionTokens: number;
-  readonly totalTokens: number;
-  readonly reasoningTokens: number;
-  readonly cachedTokens: number;
-}
-
 export interface ChatResponse {
   readonly content: string;
   /** GLM 思考流独立于正文，不参与下一轮 prompt */
@@ -61,22 +58,4 @@ export interface LLMProvider {
   readonly name: string;
   chat(req: ChatRequest): Promise<ChatResponse>;
   stream(req: ChatRequest): AsyncIterable<StreamChunk>;
-}
-
-export const EMPTY_USAGE: TokenUsage = {
-  promptTokens: 0,
-  completionTokens: 0,
-  totalTokens: 0,
-  reasoningTokens: 0,
-  cachedTokens: 0,
-};
-
-export function addUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
-  return {
-    promptTokens: left.promptTokens + right.promptTokens,
-    completionTokens: left.completionTokens + right.completionTokens,
-    totalTokens: left.totalTokens + right.totalTokens,
-    reasoningTokens: left.reasoningTokens + right.reasoningTokens,
-    cachedTokens: left.cachedTokens + right.cachedTokens,
-  };
 }

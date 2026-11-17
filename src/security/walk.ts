@@ -1,16 +1,17 @@
 import { readdir, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
-import { isSensitiveFileName } from '../security/sensitive-files.js';
 import { throwIfAborted } from '../shared/abort.js';
+import { DEFAULT_IGNORED_DIRS, type IgnoreMatcher } from './ignore.js';
+import { isSensitiveFileName } from './sensitive-files.js';
 
-export const DEFAULT_IGNORED_DIRS: ReadonlySet<string> = new Set([
-  'node_modules',
-  '.git',
-  'dist',
-  'coverage',
-  '.agent',
-]);
+export { DEFAULT_IGNORED_DIRS };
+
+export const DEFAULT_IGNORE: IgnoreMatcher = {
+  isIgnored(relativePath: string): boolean {
+    return relativePath.split('/').some((segment) => DEFAULT_IGNORED_DIRS.has(segment));
+  },
+};
 
 const BINARY_SNIFF_BYTES = 8192;
 
@@ -28,6 +29,8 @@ export interface WalkOptions {
   /** 1 表示只列 start 的直接子项 */
   readonly maxDepth: number;
   readonly includeDirs?: boolean | undefined;
+  /** 未提供时只使用内置默认目录 */
+  readonly ignore?: IgnoreMatcher | undefined;
   readonly signal?: AbortSignal | undefined;
 }
 
@@ -58,6 +61,7 @@ async function* walkDirectory(
   depth: number,
 ): AsyncGenerator<WalkEntry> {
   const { signal, maxDepth } = options;
+  const ignore = options.ignore ?? DEFAULT_IGNORE;
   throwIfAborted(signal);
 
   let entries: Dirent[];
@@ -82,7 +86,7 @@ async function* walkDirectory(
     const relativePath = toRelativePath(options.workspace, absolutePath);
 
     if (entry.isDirectory()) {
-      if (DEFAULT_IGNORED_DIRS.has(entry.name)) {
+      if (ignore.isIgnored(relativePath, true)) {
         continue;
       }
       if (options.includeDirs === true) {
@@ -94,7 +98,11 @@ async function* walkDirectory(
       continue;
     }
 
-    if (!entry.isFile() || isSensitiveFileName(entry.name)) {
+    if (
+      !entry.isFile() ||
+      isSensitiveFileName(entry.name) ||
+      ignore.isIgnored(relativePath, false)
+    ) {
       continue;
     }
     const info = await stat(absolutePath);

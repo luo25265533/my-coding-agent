@@ -1,4 +1,7 @@
 import type { Logger } from 'pino';
+import type { ContextManager } from '../context/manager.js';
+import type { ConfirmFn } from '../security/approval.js';
+import type { IgnoreMatcher } from '../security/ignore.js';
 import { dispatchToolCall } from '../tools/dispatch.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ToolResult } from '../tools/types.js';
@@ -6,20 +9,31 @@ import type { ChatMessage, ChatResponse, LLMProvider, TokenUsage, ToolCall } fro
 import { addUsage, EMPTY_USAGE } from '../llm/types.js';
 import { throwIfAborted } from '../shared/abort.js';
 
-export const AGENT_SYSTEM_PROMPT = `You are a coding agent working inside a sandboxed workspace.
-- The workspace root is the current working directory. Paths passed to tools are relative to it.
-- You cannot access files outside the workspace; secret files are blocked.
-- Discover the project with list_files and search_code before reading files. read_file supports offset/limit paging.
-- Tool arguments are JSON and must match the provided schemas. If a tool returns an error, fix the arguments and retry.
-- Do not guess file contents. When you have enough information, answer the task concisely.`;
+export const AGENT_SYSTEM_PROMPT = `You are a coding agent working inside a sandboxed workspace. Complete the user's task by inspecting the code, editing files, and running commands, then answer concisely.
 
-export type AgentStopReason =
-  | 'answer'
-  | 'empty_answer'
-  | 'output_truncated'
-  | 'repeated_tool_call'
-  | 'tool_failure_limit'
-  | 'max_iterations';
+Workspace and safety:
+- The workspace root is the current working directory. Tool paths must be relative to it.
+- Never access paths outside the workspace. Secret files (.env, keys, credentials), the .git directory, task databases, and logs are off limits.
+- Never run git push or destructive commands. High-risk actions still require user confirmation.
+
+Workflow:
+- Discover the project with list_files and search_code before reading files.
+- Read the current file before changing it, and keep edits minimal and focused.
+- After changes, verify them with the relevant command or test when the task calls for it.
+
+Tools:
+- Use write_file for new files and prefer edit_file for existing files.
+- Tool arguments are JSON and must match the provided schemas exactly.
+- If a tool returns an error, correct the arguments or approach; never invent tool output.
+- Page through long output with read_file offset/limit instead of guessing.
+
+Finish:
+- Answer as soon as the task is satisfied. Do not run tests or long commands unless the task needs them.
+- If you are blocked, state the concrete reason and the next step.`;
+
+import type { AgentStopReason } from '../shared/agent-stop.js';
+
+export type { AgentStopReason };
 
 const DEFAULT_MAX_REPEATED_CALLS = 3;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 3;
@@ -32,6 +46,14 @@ export interface AgentLoopOptions {
   readonly signal: AbortSignal;
   readonly logger?: Logger | undefined;
   readonly systemPrompt?: string | undefined;
+  /** 提供初始消息与请求级预算裁剪；缺省时使用内置 system prompt */
+  readonly context?: ContextManager | undefined;
+  /** 透传给遍历类工具的忽略规则 */
+  readonly ignore?: IgnoreMatcher | undefined;
+  /** 高风险工具动作审批；缺省视为拒绝 */
+  readonly confirm?: ConfirmFn | undefined;
+  /** run_command 默认超时 */
+  readonly commandTimeoutMs?: number | undefined;
   /** 同一工具+参数连续出现的最大次数；达到即熔断 */
   readonly maxRepeatedCalls?: number | undefined;
   /** 连续多少轮工具全部失败后熔断 */
@@ -52,10 +74,13 @@ export interface AgentResult {
 }
 
 export async function runAgentLoop(task: string, options: AgentLoopOptions): Promise<AgentResult> {
-  const messages: ChatMessage[] = [
-    { role: 'system', content: options.systemPrompt ?? AGENT_SYSTEM_PROMPT },
-    { role: 'user', content: task },
-  ];
+  const messages: ChatMessage[] =
+    options.context === undefined
+      ? [
+          { role: 'system', content: options.systemPrompt ?? AGENT_SYSTEM_PROMPT },
+          { role: 'user', content: task },
+        ]
+      : [...(await options.context.buildMessages(task))];
   let usage = EMPTY_USAGE;
   let toolCallCount = 0;
   let lastContent = '';
@@ -68,8 +93,9 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
   for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
     throwIfAborted(options.signal);
 
+    const requestMessages = options.context?.fit(messages) ?? messages;
     const response = await options.provider.chat({
-      messages,
+      messages: requestMessages,
       tools: options.tools.specs(),
       signal: options.signal,
     });
@@ -132,6 +158,9 @@ export async function runAgentLoop(task: string, options: AgentLoopOptions): Pro
         workspace: options.workspace,
         signal: options.signal,
         logger: options.logger,
+        ignore: options.ignore,
+        confirm: options.confirm,
+        commandTimeoutMs: options.commandTimeoutMs,
       });
       const durationMs = Date.now() - startedAt;
       toolCallCount += 1;

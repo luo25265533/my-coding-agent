@@ -4,7 +4,7 @@ import { assertNotSensitive, resolveInsideWorkspace } from '../../security/path-
 import { throwIfAborted } from '../../shared/abort.js';
 import { errorResult, okResult } from '../result.js';
 import type { ToolDefinition } from '../types.js';
-import { looksBinary } from '../walk.js';
+import { looksBinary } from '../../security/walk.js';
 
 const MAX_LINES = 400;
 const MAX_BYTES = 256 * 1024;

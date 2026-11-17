@@ -66,9 +66,17 @@ describe('ToolRegistry', () => {
     ).toThrow(/unsupported parameter schema/);
   });
 
-  it('默认注册三个只读工具', () => {
+  it('默认注册只读工具与写入/执行工具', () => {
     const registry = createDefaultToolRegistry();
-    expect(registry.names()).toEqual(['read_file', 'list_files', 'search_code']);
+    expect(registry.names()).toEqual([
+      'read_file',
+      'list_files',
+      'search_code',
+      'find_files',
+      'write_file',
+      'edit_file',
+      'run_command',
+    ]);
     for (const spec of registry.specs()) {
       expect(spec.parameters).toHaveProperty('type', 'object');
     }

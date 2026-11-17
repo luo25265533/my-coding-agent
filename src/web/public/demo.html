@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Demo Page - my-coding-agent</title>
+    <style>
+      :root {
+        /* 颜色：浅色主题，正文/辅助文字均满足 WCAG AA 对比度 */
+        --bg: #f5f7fa;
+        --surface: #ffffff;
+        --text: #1f2933;
+        --muted: #52606d;
+        --accent: #1652f0;
+        --accent-strong: #0d3fc8;
+        --accent-soft: #eaf0ff;
+        --border: #d9e2ec;
+        --border-strong: #b6c2d2;
+        --shadow-rest: 0 2px 8px rgba(15, 39, 255, 0.06);
+        --shadow-hover: 0 10px 24px rgba(15, 39, 255, 0.12);
+
+        /* 字号层级 */
+        --fs-title: clamp(24px, 4vw, 32px);
+        --fs-heading: 17px;
+        --fs-body: 16px;
+        --fs-small: 14px;
+
+        /* 间距（4px 基准） */
+        --space-2: 8px;
+        --space-3: 12px;
+        --space-4: 16px;
+        --space-5: 20px;
+        --space-6: 24px;
+        --space-8: 32px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+        max-width: 760px;
+        margin: var(--space-8) auto;
+        padding: 0 var(--space-5);
+        color: var(--text);
+        background-color: var(--bg);
+        font-size: var(--fs-body);
+        line-height: 1.7;
+      }
+
+      h1 {
+        margin: 0 0 var(--space-4);
+        font-size: var(--fs-title);
+        line-height: 1.3;
+        letter-spacing: -0.01em;
+        color: var(--accent);
+        border-bottom: 2px solid var(--border);
+        padding-bottom: var(--space-3);
+      }
+
+      h2 {
+        margin: 0 0 var(--space-2);
+        font-size: var(--fs-heading);
+        line-height: 1.4;
+        color: var(--text);
+      }
+
+      p {
+        margin: 0 0 var(--space-3);
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 0.9em;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+      }
+
+      .card {
+        background-color: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow-rest);
+        padding: var(--space-6);
+        margin-bottom: var(--space-4);
+        transition:
+          border-color 160ms ease,
+          box-shadow 160ms ease,
+          transform 160ms ease;
+      }
+
+      .card:hover {
+        border-color: var(--border-strong);
+        box-shadow: var(--shadow-hover);
+        transform: translateY(-2px);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: var(--space-4);
+      }
+
+      .grid .card {
+        margin-bottom: 0;
+        padding: var(--space-5);
+      }
+
+      .grid p {
+        margin: 0;
+        font-size: var(--fs-small);
+        color: var(--muted);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-3);
+        margin-top: var(--space-2);
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-2);
+        padding: 10px 20px;
+        font-size: 15px;
+        font-weight: 600;
+        font-family: inherit;
+        line-height: 1.4;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+        transition:
+          background-color 160ms ease,
+          border-color 160ms ease,
+          box-shadow 160ms ease,
+          transform 160ms ease;
+      }
+
+      .btn:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-strong);
+        box-shadow: var(--shadow-hover);
+        transform: translateY(-1px);
+      }
+
+      .btn-ghost {
+        background: transparent;
+        border-color: var(--border);
+        color: var(--text);
+      }
+
+      .btn-ghost:hover {
+        background: var(--accent-soft);
+        border-color: var(--border-strong);
+        transform: translateY(-1px);
+      }
+
+      .btn:active {
+        transform: translateY(0);
+      }
+
+      footer {
+        margin-top: var(--space-8);
+        font-size: var(--fs-small);
+        color: var(--muted);
+        text-align: center;
+      }
+
+      /* 移动端：收窄页边距、卡片单列、按钮占满整行 */
+      @media (max-width: 640px) {
+        body {
+          margin: var(--space-6) auto;
+          padding: 0 var(--space-4);
+        }
+
+        .card {
+          padding: var(--space-5);
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+          gap: var(--space-3);
+        }
+
+        .actions {
+          flex-direction: column;
+        }
+
+        .btn {
+          width: 100%;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .card,
+        .btn {
+          transition: none;
+        }
+
+        .card:hover,
+        .btn:hover,
+        .btn:active {
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>my-coding-agent Demo Page</h1>
+      <p>
+        这是一个静态演示页面，位于 <code>src/web/public/demo.html</code>，
+        可以直接在浏览器中打开，也可以通过 web server 静态访问。
+      </p>
+      <p>
+        页面包含完整的 HTML5 结构、UTF-8 字符编码声明，以及少量内联 CSS
+        样式，用于验证静态资源的构建与复制流程。
+      </p>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" onclick="location.reload()">
+          重新加载页面
+        </button>
+        <button
+          type="button"
+          class="btn btn-ghost"
+          onclick="navigator.clipboard?.writeText('src/web/public/demo.html')"
+        >
+          复制文件路径
+        </button>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h2>HTML5 结构</h2>
+        <p>标准 doctype 与语义化标签，浏览器可直接打开。</p>
+      </div>
+      <div class="card">
+        <h2>UTF-8 编码</h2>
+        <p>显式声明字符编码，中英文混排无乱码。</p>
+      </div>
+      <div class="card">
+        <h2>构建复制</h2>
+        <p>copy-public.js 会随构建拷贝静态资源到产物目录。</p>
+      </div>
+    </div>
+    <footer>Served from my-coding-agent &copy; 2025</footer>
+  </body>
+</html>

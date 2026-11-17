@@ -2,6 +2,7 @@ import { z } from 'zod';
 import pino from 'pino';
 import { describe, expect, it } from 'vitest';
 import { runAgentLoop } from '../../src/agent/loop.js';
+import type { ContextManager } from '../../src/context/manager.js';
 import { createMockProvider } from '../../src/llm/providers/mock.js';
 import {
   EMPTY_USAGE,
@@ -12,6 +13,7 @@ import {
   type StreamChunk,
   type TokenUsage,
 } from '../../src/llm/types.js';
+import type { IgnoreMatcher } from '../../src/security/ignore.js';
 import { ToolRegistry, errorResult } from '../../src/tools/index.js';
 import { AgentError, ErrorCode } from '../../src/shared/errors.js';
 
@@ -419,6 +421,98 @@ describe('runAgentLoop', () => {
 
     expect(result.stopReason).toBe('answer');
     expect(result.toolCalls).toBe(5);
+  });
+
+  it('context 提供初始消息并在每轮请求前调用 fit', async () => {
+    const base: ChatMessage[] = [
+      { role: 'system', content: 'CTX SYSTEM' },
+      { role: 'user', content: 'CTX TASK' },
+    ];
+    const fitted: (readonly ChatMessage[])[] = [];
+    const requests: ChatRequest[] = [];
+    const context: ContextManager = {
+      budgetTokens: 16000,
+      buildMessages: () => Promise.resolve(base),
+      fit: (messages) => {
+        fitted.push(messages);
+        return messages.slice(0, 2);
+      },
+      stats: () => ({
+        budgetTokens: 16000,
+        repoMapTokens: 0,
+        repoMapFiles: 0,
+        repoMapTruncated: false,
+        repoMapDropped: false,
+        initialTokens: 10,
+        droppedMessages: 0,
+        truncatedToolMessages: 0,
+        lastRequestTokens: 10,
+      }),
+    };
+    const provider: LLMProvider = {
+      name: 'recording',
+      chat(req: ChatRequest): Promise<ChatResponse> {
+        requests.push(req);
+        if (requests.length === 1) {
+          return Promise.resolve(
+            responseOf({
+              finishReason: 'tool_calls',
+              toolCalls: [{ id: 'call_1', name: 'echo', arguments: '{"text":"hi"}' }],
+            }),
+          );
+        }
+        return Promise.resolve(responseOf({ content: 'done' }));
+      },
+      async *stream(): AsyncIterable<StreamChunk> {
+        await Promise.resolve();
+        yield* [] as StreamChunk[];
+      },
+    };
+
+    const result = await runAgentLoop('ctx task', {
+      provider,
+      tools: echoRegistry(),
+      workspace: process.cwd(),
+      maxIterations: 5,
+      signal: signal(),
+      context,
+    });
+
+    expect(result.content).toBe('done');
+    expect(fitted).toHaveLength(2);
+    expect(fitted[1]).toHaveLength(4);
+    expect(requests[0]?.messages).toEqual(base);
+    expect(requests[1]?.messages).toHaveLength(2);
+  });
+
+  it('ignore 匹配器透传到工具上下文', async () => {
+    const matcher: IgnoreMatcher = { isIgnored: () => true };
+    let seen: IgnoreMatcher | undefined;
+    const tools = new ToolRegistry().register({
+      name: 'probe',
+      description: 'capture ignore matcher',
+      parameters: z.object({}),
+      riskLevel: 'low',
+      execute: (_params, ctx) => {
+        seen = ctx.ignore;
+        return Promise.resolve({ ok: true, content: 'seen' });
+      },
+    });
+    const provider = createMockProvider({
+      script: [{ toolCalls: [{ name: 'probe', arguments: '{}' }] }, { content: 'ok' }],
+    });
+
+    const result = await runAgentLoop('probe', {
+      provider,
+      tools,
+      workspace: process.cwd(),
+      maxIterations: 5,
+      signal: signal(),
+      ignore: matcher,
+    });
+
+    expect(result.stopReason).toBe('answer');
+    expect(seen).toBe(matcher);
   });
 
   it('provider 异常原样冒泡，不转成停止原因', async () => {
